@@ -1,36 +1,39 @@
-//import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinJvmCompilation
-//import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinJvmTarget
-//import org.jetbrains.kotlin.gradle.targets.jvm.KotlinJvmTarget
-//import org.gradle.api.attributes.TargetJvmEnvironment
+import java.util.Properties
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
-    alias(libs.plugins.android.library)
+    // android.library applied conditionally below
 }
 
-android {
-    namespace = "coredevices.blobannotations"
-    compileSdk = libs.versions.android.compileSdk.get().toInt()
-    defaultConfig {
-        minSdk = 26
-        lint.targetSdk = compileSdk
-    }
+val enableAndroid = System.getenv("ANDROID_HOME") != null ||
+    (rootProject.file("local.properties").exists() &&
+        Properties().also {
+            it.load(rootProject.file("local.properties").inputStream())
+        }.getProperty("sdk.dir") != null)
 
-    compileOptions {
-        sourceCompatibility = JavaVersion.valueOf("VERSION_${libs.versions.jvm.toolchain.get()}")
-        targetCompatibility = JavaVersion.valueOf("VERSION_${libs.versions.jvm.toolchain.get()}")
-    }
-
-    kotlin {
-        jvmToolchain(libs.versions.jvm.toolchain.get().toInt())
+if (enableAndroid) {
+    apply(plugin = "com.android.library")
+    configure<com.android.build.gradle.LibraryExtension> {
+        namespace = "coredevices.blobannotations"
+        compileSdk = libs.versions.android.compileSdk.get().toInt()
+        defaultConfig {
+            minSdk = 26
+            lint.targetSdk = compileSdk
+        }
+        compileOptions {
+            sourceCompatibility = JavaVersion.valueOf("VERSION_${libs.versions.jvm.toolchain.get()}")
+            targetCompatibility = JavaVersion.valueOf("VERSION_${libs.versions.jvm.toolchain.get()}")
+        }
     }
 }
 
 kotlin {
-    androidTarget {
-        publishLibraryVariants("release", "debug")
+    if (enableAndroid) {
+        androidTarget {
+            publishLibraryVariants("release", "debug")
+        }
     }
 
     jvm()
@@ -38,41 +41,22 @@ kotlin {
     val xcfName = "libpebble-annotations"
 
     iosX64 {
-        binaries.framework {
-            baseName = xcfName
-        }
+        binaries.framework { baseName = xcfName }
     }
-
     iosArm64 {
-        binaries.framework {
-            baseName = xcfName
-        }
+        binaries.framework { baseName = xcfName }
     }
-
     iosSimulatorArm64 {
-        binaries.framework {
-            baseName = xcfName
-        }
+        binaries.framework { baseName = xcfName }
     }
+
     sourceSets {
-        commonMain {
-            dependencies {
-                // Your dependencies here
-            }
+        commonMain.dependencies {}
+        commonTest.dependencies {}
+        if (enableAndroid) {
+            androidMain {}
         }
-        commonTest {
-            dependencies {
-                // Include testing dependencies such as junit here.
-            }
-        }
-        androidMain {
-
-        }
-        iosMain {
-
-        }
-        jvmMain {
-
-        }
+        iosMain {}
+        jvmMain {}
     }
 }

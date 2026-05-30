@@ -27,14 +27,14 @@ rootProject.name = "libpebbleroot"
 include(":libpebble3")
 include(":blobdbgen")
 include(":blobannotations")
-// We do not need the entire core app in the microPebble, so disable this to make build faster
-//include(":composeApp")
-//include(":pebble")
-//include(":util")
-include(":mcp")
-include(":index-ai")
-//include(":resampler")
-include(":cactus")
-include(":libindex")
-//include(":experimental")
-include(":krisp-stubs")
+
+// Modules that require Android SDK — skip them when building for JVM/Linux only
+val hasAndroidSdk = System.getenv("ANDROID_HOME") != null ||
+    properties.getProperty("sdk.dir") != null
+if (hasAndroidSdk) {
+    include(":mcp")
+    include(":index-ai")
+    include(":cactus")
+    include(":libindex")
+    include(":krisp-stubs")
+}

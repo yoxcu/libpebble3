@@ -121,6 +121,10 @@ class PebbleBle(
             if (pairingResult != null) {
                 return PebbleConnectionResult.Failed(pairingResult)
             }
+            // Re-discover services: the watch only exposes the encrypted PPoG service (30000003)
+            // after bonding. The pre-pairing discovery cache misses it.
+            val refreshed = device.discoverServices()
+            logger.d("services after pairing = $refreshed")
         }
 
         if (ppogPacketSender is PpogClient) {

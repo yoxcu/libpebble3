@@ -40,7 +40,7 @@ class PPoG(
 
     fun run(requestedPpogResetViaCharacteristic: Boolean) {
         scope.launch {
-            val params = withTimeoutOrNull(12.seconds) {
+            val params = withTimeoutOrNull(30.seconds) {
                 initWaitingForResetRequest()
             } ?: withTimeoutOrNull(5.seconds) {
                 if (blePlatformConfig.fallbackToResetRequest && !requestedPpogResetViaCharacteristic) {
@@ -129,19 +129,29 @@ class PPoG(
         val resetRequest = waitForPacket<PPoGPacket.ResetRequest>()
         logger.d("got $resetRequest")
 
-        // Send reset complete
-        sendPacketImmediately(
-            packet = PPoGPacket.ResetComplete(
-                sequence = 0,
-                rxWindow = min(blePlatformConfig.desiredRxWindow, MAX_SUPPORTED_WINDOW_SIZE),
-                txWindow = min(blePlatformConfig.desiredTxWindow, MAX_SUPPORTED_WINDOW_SIZE),
-            ),
-            version = resetRequest.ppogVersion
+        val resetCompletePacket = PPoGPacket.ResetComplete(
+            sequence = 0,
+            rxWindow = min(blePlatformConfig.desiredRxWindow, MAX_SUPPORTED_WINDOW_SIZE),
+            txWindow = min(blePlatformConfig.desiredTxWindow, MAX_SUPPORTED_WINDOW_SIZE),
         )
+        sendPacketImmediately(packet = resetCompletePacket, version = resetRequest.ppogVersion)
 
-        // Wait for reset complete confirmation
-        val resetComplete = pPoGStream.inboundPPoGBytesChannel.receive().asPPoGPacket()
-        if (resetComplete !is PPoGPacket.ResetComplete) throw IllegalStateException("expected ResetComplete got $resetComplete")
+        // Wait for reset complete confirmation. The watch may retry ResetRequest if our
+        // ResetComplete notification was not delivered (BLE notification dropped); re-send each time.
+        val resetComplete: PPoGPacket.ResetComplete
+        while (true) {
+            val packet = pPoGStream.inboundPPoGBytesChannel.receive().asPPoGPacket()
+            if (packet is PPoGPacket.ResetComplete) {
+                resetComplete = packet
+                break
+            }
+            if (packet is PPoGPacket.ResetRequest) {
+                logger.d("re-got ResetRequest while waiting for ResetComplete - resending ResetComplete")
+                sendPacketImmediately(packet = resetCompletePacket, version = resetRequest.ppogVersion)
+                continue
+            }
+            throw IllegalStateException("expected ResetComplete got $packet")
+        }
         logger.d("got $resetComplete")
 
         return PPoGConnectionParams(
