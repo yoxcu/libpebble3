@@ -1,3 +1,4 @@
+import java.util.Properties
 import org.jetbrains.kotlin.gradle.plugin.KotlinSourceSetTree
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
 
@@ -5,12 +6,24 @@ plugins {
     alias(libs.plugins.kotlin.multiplatform)
     `maven-publish`
     alias(libs.plugins.kotlin.serialization)
-    alias(libs.plugins.android.library)
     alias(libs.plugins.ksp)
-    alias(libs.plugins.room)
     alias(libs.plugins.kotlinx.atomicfu)
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
+    // android.library applied conditionally after this block; androidx.room always applied
+}
+
+// Android SDK is optional — when absent (e.g. Linux-only builds) we skip all Android targets.
+val enableAndroid = System.getenv("ANDROID_HOME") != null ||
+    (rootProject.file("local.properties").exists() &&
+        Properties().also {
+            it.load(rootProject.file("local.properties").inputStream())
+        }.getProperty("sdk.dir") != null)
+
+apply(plugin = "androidx.room")
+
+if (enableAndroid) {
+    apply(plugin = "com.android.library")
 }
 
 publishing {
@@ -26,31 +39,27 @@ publishing {
     }
 }
 
-room {
+configure<androidx.room.gradle.RoomExtension> {
     schemaDirectory("schema")
 }
 
-android {
-    compileSdk = libs.versions.android.compileSdk.get().toInt()
-    namespace = "io.rebble.libpebblecommon"
-    defaultConfig {
-        minSdk = 26
-        lint.targetSdk = compileSdk
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    }
-
-    compileOptions {
-        sourceCompatibility = JavaVersion.valueOf("VERSION_${libs.versions.jvm.toolchain.get()}")
-        targetCompatibility = JavaVersion.valueOf("VERSION_${libs.versions.jvm.toolchain.get()}")
-    }
-
-    kotlin {
-        jvmToolchain(libs.versions.jvm.toolchain.get().toInt())
-    }
-
-    buildTypes {
-        release {
-            consumerProguardFiles("consumer-rules.pro")
+if (enableAndroid) {
+    configure<com.android.build.gradle.LibraryExtension> {
+        compileSdk = libs.versions.android.compileSdk.get().toInt()
+        namespace = "io.rebble.libpebblecommon"
+        defaultConfig {
+            minSdk = 26
+            lint.targetSdk = compileSdk
+            testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        }
+        compileOptions {
+            sourceCompatibility = JavaVersion.valueOf("VERSION_${libs.versions.jvm.toolchain.get()}")
+            targetCompatibility = JavaVersion.valueOf("VERSION_${libs.versions.jvm.toolchain.get()}")
+        }
+        buildTypes {
+            release {
+                consumerProguardFiles("consumer-rules.pro")
+            }
         }
     }
 }
@@ -74,16 +83,18 @@ kotlin {
         }
     }
 
-    androidTarget {
-        publishLibraryVariants("release", "debug")
-        instrumentedTestVariant {
-            sourceSetTree.set(KotlinSourceSetTree.test)
+    if (enableAndroid) {
+        androidTarget {
+            publishLibraryVariants("release", "debug")
+            instrumentedTestVariant {
+                sourceSetTree.set(KotlinSourceSetTree.test)
+            }
         }
     }
 
     jvm()
 
-    val xcodeExists by lazy { // Define xcodeExists and xcodeDir here to be accessible by iOS targets
+    val xcodeExists by lazy {
         project.providers.exec {
             isIgnoreExitValue = true
             commandLine("which", "xcode-select")
@@ -147,7 +158,6 @@ kotlin {
         }
         commonMain {
             kotlin {
-                // Include ksp-generated common code (from our :blobdgen processor)
                 srcDir("build/generated/ksp/metadata/commonMain/kotlin")
             }
         }
@@ -181,9 +191,11 @@ kotlin {
             implementation(libs.coroutines.test)
         }
 
-        androidMain.dependencies {
-            implementation(libs.androidx.core.ktx)
-            implementation(libs.pebblekit)
+        if (enableAndroid) {
+            androidMain.dependencies {
+                implementation(libs.androidx.core.ktx)
+                implementation(libs.pebblekit)
+            }
         }
 
         iosMain.dependencies {
@@ -192,6 +204,8 @@ kotlin {
         }
 
         jvmMain.dependencies {
+            implementation("com.github.hypfvieh:dbus-java-core:5.2.0")
+            implementation("com.github.hypfvieh:dbus-java-transport-native-unixsocket:5.2.0")
         }
 
         jvmTest.dependencies {
@@ -202,33 +216,40 @@ kotlin {
             implementation(libs.ktor.client.okhttp)
         }
 
-        androidInstrumentedTest.dependencies {
-            implementation(libs.androidx.test.runner)
-            implementation(libs.androidx.test.rules)
-            implementation(libs.androidx.monitor)
-        }
+        if (enableAndroid) {
+            androidInstrumentedTest.dependencies {
+                implementation(libs.androidx.test.runner)
+                implementation(libs.androidx.test.rules)
+                implementation(libs.androidx.monitor)
+            }
 
-        getByName("androidUnitTest").dependencies {
-            implementation(libs.kotlin.test)
-            implementation(libs.kotlin.test.junit)
-            implementation(libs.coroutines.test)
+            getByName("androidUnitTest").dependencies {
+                implementation(libs.kotlin.test)
+                implementation(libs.kotlin.test.junit)
+                implementation(libs.coroutines.test)
+            }
         }
     }
 }
 
-// Otherwise it doesn't trigger our blobdbgen processor when compiling code
-// https://github.com/google/ksp/issues/567
 tasks.withType<KotlinCompilationTask<*>>().all {
     if (name != "kspCommonMainKotlinMetadata") {
         dependsOn("kspCommonMainKotlinMetadata")
     }
 }
+
 afterEvaluate {
-    tasks.named("kspDebugKotlinAndroid") {
+    tasks.named("kspKotlinJvm") {
         dependsOn("kspCommonMainKotlinMetadata")
     }
-    tasks.named("kspReleaseKotlinAndroid") {
-        dependsOn("kspCommonMainKotlinMetadata")
+
+    if (enableAndroid) {
+        tasks.named("kspDebugKotlinAndroid") {
+            dependsOn("kspCommonMainKotlinMetadata")
+        }
+        tasks.named("kspReleaseKotlinAndroid") {
+            dependsOn("kspCommonMainKotlinMetadata")
+        }
     }
 
     if (enableIosTarget) {
@@ -263,10 +284,11 @@ afterEvaluate {
 }
 
 dependencies {
-//    add("kspCommonMainMetadata", libs.room.compiler)
-//    add("kspJvm", libs.room.compiler)
     add("kspCommonMainMetadata", project(":blobdbgen"))
-    add("kspAndroid", libs.room.compiler)
+    add("kspJvm", libs.room.compiler)
+    if (enableAndroid) {
+        add("kspAndroid", libs.room.compiler)
+    }
 
     if (enableIosTarget) {
         add("kspIosX64", libs.room.compiler)
@@ -274,75 +296,6 @@ dependencies {
         add("kspIosSimulatorArm64", libs.room.compiler)
     }
 }
-
-/*
-if (Os.isFamily(Os.FAMILY_MAC)) {
-    val iosSimulatorFatFramework by tasks.registering(PlatformFatFramework::class) {
-        onlyIf {
-            Os.isFamily(Os.FAMILY_MAC)
-        }
-        val iosX64Task = (kotlin.targets.getByName("iosX64") as KotlinNativeTarget).binaries.getFramework("RELEASE")
-        val iosSimulatorArm64Task = (kotlin.targets.getByName("iosSimulatorArm64") as KotlinNativeTarget).binaries.getFramework("RELEASE")
-        dependsOn(iosX64Task.linkTask)
-        dependsOn(iosSimulatorArm64Task.linkTask)
-        platform.set("simulator")
-
-        inputFrameworks.setFrom(project.files(iosX64Task.outputFile, iosSimulatorArm64Task.outputFile))
-        inputFrameworkDSYMs.setFrom(project.files(iosX64Task.outputFile.path+".dSYM", iosX64Task.outputFile.path+".dSYM"))
-    }
-
-    val iosDeviceFatFramework by tasks.registering(PlatformFatFramework::class) {
-        onlyIf {
-            Os.isFamily(Os.FAMILY_MAC)
-        }
-        val iosTask = (kotlin.targets.getByName("ios") as KotlinNativeTarget).binaries.getFramework("RELEASE")
-        dependsOn(iosTask.linkTask)
-        platform.set("device")
-
-        inputFrameworks.setFrom(project.files(iosTask.outputFile))
-        inputFrameworkDSYMs.setFrom(project.files(iosTask.outputFile.path+".dSYM"))
-    }
-
-    val assembleXCFramework by tasks.registering {
-        onlyIf {
-            org.apache.tools.ant.taskdefs.condition.Os.isFamily(org.apache.tools.ant.taskdefs.condition.Os.FAMILY_MAC)
-        }
-        val deviceTask = tasks.getByName("iosDeviceFatFramework")
-        val simulatorTask = tasks.getByName("iosSimulatorFatFramework")
-        dependsOn(deviceTask)
-        dependsOn(simulatorTask)
-        outputs.dir(layout.buildDirectory.dir("xcframework")).withPropertyName("outputDir")
-
-        val outputPath = layout.buildDirectory.dir("xcframework").get().asFile.path + "/libpebblecommon.xcframework"
-
-        doLast {
-            delete(outputPath)
-            exec {
-                commandLine (
-                    "xcodebuild", "-create-xcframework",
-                    "-framework", deviceTask.outputs.files.first { it.name == "libpebblecommon.framework" }.path,
-                    "-debug-symbols", deviceTask.outputs.files.first { it.name == "libpebblecommon.framework.dSYM" }.path,
-                    "-framework", simulatorTask.outputs.files.first { it.name == "libpebblecommon.framework" }.path,
-                    "-debug-symbols", simulatorTask.outputs.files.first { it.name == "libpebblecommon.framework.dSYM" }.path,
-                    "-output", outputPath
-                )
-            }
-        }
-    }
-}
-*/
-/*project.afterEvaluate {
-    tasks.withType(PublishToMavenRepository::class.java) {
-        onlyIf {
-            !publication.name.contains("ios")
-        }
-    }
-    tasks.withType(Jar::class.java) {
-        onlyIf {
-            !name.contains("ios")
-        }
-    }
-}*/
 
 abstract class BuildSwiftFramework : DefaultTask() {
     @Inject
