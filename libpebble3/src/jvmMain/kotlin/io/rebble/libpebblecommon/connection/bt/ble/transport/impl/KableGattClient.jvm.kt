@@ -1,6 +1,7 @@
 package io.rebble.libpebblecommon.connection.bt.ble.transport.impl
 
 import com.juul.kable.Peripheral
+import com.juul.kable.WriteType
 import io.rebble.libpebblecommon.connection.PebbleBleIdentifier
 
 actual fun peripheralFromIdentifier(
@@ -8,11 +9,14 @@ actual fun peripheralFromIdentifier(
     name: String,
     autoConnect: Boolean,
 ): Peripheral? {
-    TODO("Not yet implemented")
+    val kableId = identifier.kableIdentifier ?: return null
+    return Peripheral(kableId) { }
 }
 
-actual suspend fun Peripheral.requestMtuNative(mtu: Int): Int {
-    return mtu
-}
+// On JVM/Linux, report the actual negotiated ATT MTU rather than echoing back the requested value.
+// Returning the requested value causes a "Can't reduce MTU" crash when getMtu() subsequently
+// returns the real (smaller) value.
+actual suspend fun Peripheral.requestMtuNative(mtu: Int): Int =
+    maximumWriteValueLengthForType(WriteType.WithoutResponse) + 3
 
 actual suspend fun Peripheral.refreshServicesNative(): Boolean = false
