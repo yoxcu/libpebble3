@@ -48,7 +48,10 @@ class PPoG(
                 withTimeoutOrNull(12.seconds) { initWithResetRequest() }
                     ?: throw ConnectionException(ConnectionFailureReason.TimeoutInitializingPpog)
             } else {
-                withTimeoutOrNull(12.seconds) {
+                // Forward PPoG waits for the watch to start the handshake, which it only does
+                // once it has found our GATT server and subscribed. On BlueZ that can take longer
+                // than upstream's 12s, which tore the connection down first.
+                withTimeoutOrNull(30.seconds) {
                     initWaitingForResetRequest()
                 } ?: withTimeoutOrNull(5.seconds) {
                     if (blePlatformConfig.fallbackToResetRequest) {
@@ -152,11 +155,24 @@ class PPoG(
     private suspend fun respondToResetRequest(resetRequest: PPoGPacket.ResetRequest): PPoGConnectionParams {
         sendResetComplete(resetRequest.ppogVersion)
 
-        // Wait for reset complete confirmation
-        val resetComplete = waitForPacket<PPoGPacket.ResetComplete>()
-        logger.d("got $resetComplete")
+        // Wait for reset complete confirmation. The watch retries its ResetRequest if our
+        // ResetComplete notification was not delivered (BLE notification dropped); re-send each time.
+        while (true) {
+            val packet = pPoGStream.inboundPPoGBytesChannel.receive().asPPoGPacket()
+            when (packet) {
+                is PPoGPacket.ResetComplete -> {
+                    logger.d("got $packet")
+                    return connectionParams(packet, resetRequest.ppogVersion)
+                }
 
-        return connectionParams(resetComplete, resetRequest.ppogVersion)
+                is PPoGPacket.ResetRequest -> {
+                    logger.d("re-got ResetRequest while waiting for ResetComplete - resending ResetComplete")
+                    sendResetComplete(resetRequest.ppogVersion)
+                }
+
+                else -> throw IllegalStateException("expected ResetComplete got $packet")
+            }
+        }
     }
 
     private suspend fun sendResetComplete(version: PPoGVersion) {

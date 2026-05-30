@@ -1,3 +1,4 @@
+import com.android.build.api.dsl.KotlinMultiplatformAndroidLibraryTarget
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
 
@@ -5,10 +6,18 @@ plugins {
     alias(libs.plugins.kotlin.multiplatform)
     `maven-publish`
     alias(libs.plugins.kotlin.serialization)
-    alias(libs.plugins.androidKotlinMultiplatformLibrary)
+    // com.android.kotlin.multiplatform.library is applied below, only when the Android gate is on
     alias(libs.plugins.ksp)
     alias(libs.plugins.room)
     alias(libs.plugins.kotlinx.atomicfu)
+}
+
+// Android SDK is optional — when absent (e.g. Linux-only builds) we skip all Android targets.
+// Decided once in settings.gradle.kts (an SDK is configured and Gradle is 9 or newer).
+val enableAndroid = gradle.extra["enableAndroid"] as Boolean
+
+if (enableAndroid) {
+    apply(plugin = "com.android.kotlin.multiplatform.library")
 }
 
 publishing {
@@ -44,29 +53,33 @@ kotlin {
         }
     }
 
-    android {
-        namespace = "io.rebble.libpebblecommon"
-        compileSdk = libs.versions.android.compileSdk.get().toInt()
-        minSdk = libs.versions.android.minSdk.get().toInt()
+    if (enableAndroid) {
+        // No type-safe `android {}` accessor exists for a plugin applied outside plugins {}, so
+        // configure the target through the extension the plugin registers on `kotlin`.
+        extensions.configure<KotlinMultiplatformAndroidLibraryTarget>("android") {
+            namespace = "io.rebble.libpebblecommon"
+            compileSdk = libs.versions.android.compileSdk.get().toInt()
+            minSdk = libs.versions.android.minSdk.get().toInt()
 
-        compilerOptions {
-            jvmTarget.set(JvmTarget.valueOf("JVM_${libs.versions.jvm.toolchain.get()}"))
-        }
+            compilerOptions {
+                jvmTarget.set(JvmTarget.valueOf("JVM_${libs.versions.jvm.toolchain.get()}"))
+            }
 
-        androidResources {
-            enable = true
-        }
+            androidResources {
+                enable = true
+            }
 
-        withHostTestBuilder {}
+            withHostTestBuilder {}
 
-        withDeviceTestBuilder {
-            sourceSetTreeName = "test"
-        }.configure {
-            instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        }
+            withDeviceTestBuilder {
+                sourceSetTreeName = "test"
+            }.configure {
+                instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+            }
 
-        optimization {
-            consumerKeepRules.file("consumer-rules.pro")
+            optimization {
+                consumerKeepRules.file("consumer-rules.pro")
+            }
         }
     }
 
@@ -134,9 +147,11 @@ kotlin {
             implementation(libs.coroutines.test)
         }
 
-        androidMain.dependencies {
-            implementation(libs.androidx.core.ktx)
-            implementation(libs.pebblekit)
+        if (enableAndroid) {
+            androidMain.dependencies {
+                implementation(libs.androidx.core.ktx)
+                implementation(libs.pebblekit)
+            }
         }
 
         iosMain.dependencies {
@@ -145,6 +160,8 @@ kotlin {
         }
 
         jvmMain.dependencies {
+            implementation("com.github.hypfvieh:dbus-java-core:5.2.0")
+            implementation("com.github.hypfvieh:dbus-java-transport-native-unixsocket:5.2.0")
         }
 
         jvmTest.dependencies {
@@ -155,16 +172,18 @@ kotlin {
             implementation(libs.ktor.client.okhttp)
         }
 
-        getByName("androidDeviceTest").dependencies {
-            implementation(libs.androidx.test.runner)
-            implementation(libs.androidx.test.rules)
-            implementation(libs.androidx.monitor)
-        }
+        if (enableAndroid) {
+            getByName("androidDeviceTest").dependencies {
+                implementation(libs.androidx.test.runner)
+                implementation(libs.androidx.test.rules)
+                implementation(libs.androidx.monitor)
+            }
 
-        getByName("androidHostTest").dependencies {
-            implementation(libs.kotlin.test)
-            implementation(libs.kotlin.test.junit)
-            implementation(libs.coroutines.test)
+            getByName("androidHostTest").dependencies {
+                implementation(libs.kotlin.test)
+                implementation(libs.kotlin.test.junit)
+                implementation(libs.coroutines.test)
+            }
         }
     }
 }
@@ -178,8 +197,14 @@ tasks.withType<KotlinCompilationTask<*>>().all {
 }
 
 afterEvaluate {
-    tasks.named("kspAndroidMain") {
+    tasks.named("kspKotlinJvm") {
         dependsOn("kspCommonMainKotlinMetadata")
+    }
+
+    if (enableAndroid) {
+        tasks.named("kspAndroidMain") {
+            dependsOn("kspCommonMainKotlinMetadata")
+        }
     }
 
     if (enableIosTarget) {
@@ -193,27 +218,14 @@ afterEvaluate {
 }
 
 dependencies {
-//    add("kspCommonMainMetadata", libs.room.compiler)
-//    add("kspJvm", libs.room.compiler)
     add("kspCommonMainMetadata", project(":blobdbgen"))
-    add("kspAndroid", libs.room.compiler)
+    add("kspJvm", libs.room.compiler)
+    if (enableAndroid) {
+        add("kspAndroid", libs.room.compiler)
+    }
 
     if (enableIosTarget) {
         add("kspIosArm64", libs.room.compiler)
         add("kspIosSimulatorArm64", libs.room.compiler)
     }
 }
-
-/*project.afterEvaluate {
-    tasks.withType(PublishToMavenRepository::class.java) {
-        onlyIf {
-            !publication.name.contains("ios")
-        }
-    }
-    tasks.withType(Jar::class.java) {
-        onlyIf {
-            !name.contains("ios")
-        }
-    }
-}*/
-
