@@ -39,6 +39,7 @@ class PPoG(
     private var closed = false
 
     fun run(reversed: Boolean = false) {
+        logger.i("run(): ${if (reversed) "sending" else "waiting for"} PPoG RESET_REQUEST")
         scope.launch {
             val params = if (reversed) {
                 // Reversed PPoG: the watch is server-side and, once the phone
@@ -145,10 +146,10 @@ class PPoG(
 
     // Negotiate connection
     private suspend fun initWaitingForResetRequest(): PPoGConnectionParams {
-        logger.d("initWaitingForResetRequest")
+        logger.i("initWaitingForResetRequest: waiting for RESET_REQUEST")
 
         val resetRequest = waitForPacket<PPoGPacket.ResetRequest>()
-        logger.d("got $resetRequest")
+        logger.i("got $resetRequest")
         return respondToResetRequest(resetRequest)
     }
 
@@ -161,7 +162,7 @@ class PPoG(
             val packet = pPoGStream.inboundPPoGBytesChannel.receive().asPPoGPacket()
             when (packet) {
                 is PPoGPacket.ResetComplete -> {
-                    logger.d("got $packet")
+                    logger.i("got $packet")
                     return connectionParams(packet, resetRequest.ppogVersion)
                 }
 
@@ -170,7 +171,7 @@ class PPoG(
                     sendResetComplete(resetRequest.ppogVersion)
                 }
 
-                else -> throw IllegalStateException("expected ResetComplete got $packet")
+                else -> logger.w("unexpected packet $packet waiting for ResetComplete")
             }
         }
     }
