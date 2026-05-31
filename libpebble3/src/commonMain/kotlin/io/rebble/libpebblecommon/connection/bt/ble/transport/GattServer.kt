@@ -39,6 +39,7 @@ expect class GattServer {
     ): SendResult
     fun wasRestoredWithSubscribedCentral(): Boolean
     fun initServer()
+    suspend fun reAddServices()
 }
 
 class GattServerManager(
@@ -140,6 +141,10 @@ class GattServerManager(
         return gattServer?.wasRestoredWithSubscribedCentral() ?: false
     }
 
+    suspend fun reRegisterApplication() {
+        gattServer?.reAddServices()
+    }
+
     private suspend fun openIfNeeded() {
         serverMutex.withLock {
             if (gattServer != null) return@withLock
@@ -152,7 +157,7 @@ class GattServerManager(
             // CBPeripheralManager construction on iOS.
             libPebbleCoroutineScope.launch {
                 gattServer?.characteristicReadRequest?.collect {
-                    logger.d("sending meta response")
+                    logger.i("sending meta response (watch reading META characteristic)")
                     it.respond(SERVER_META_RESPONSE)
                 }
             }
