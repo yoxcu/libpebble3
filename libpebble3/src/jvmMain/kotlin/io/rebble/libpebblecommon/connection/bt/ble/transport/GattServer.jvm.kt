@@ -23,6 +23,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.uuid.Uuid
+import java.util.concurrent.atomic.AtomicInteger
 
 private val log = Logger.withTag("BluezGattServer")
 
@@ -72,10 +73,28 @@ actual class GattServer {
     actual val characteristicReadRequest: Flow<ServerCharacteristicReadRequest> =
         _readRequests.asSharedFlow()
 
+    private val sentNotifyCount = AtomicInteger(0)
+    private val loopbackCount = AtomicInteger(0)
+
     actual fun initServer() {
         conn.exportObject(APP_PATH, AppObjectManager())
         conn.exportObject(PPOG_CHAR_PATH, PPoGCharacteristic())
         conn.exportObject(META_CHAR_PATH, MetaCharacteristic())
+        // Self-listener: if the D-Bus daemon delivers our own PropertiesChanged back to us,
+        // dbus-java IS actually emitting the signal on the bus. If sendData logs "sent" but
+        // this never fires, the signal is being silently swallowed in the async executor.
+        try {
+            conn.addSigHandler(Properties.PropertiesChanged::class.java) { signal ->
+                if (signal.getInterfaceName() == "org.bluez.GattCharacteristic1" &&
+                    signal.getPropertiesChanged().containsKey("Value")
+                ) {
+                    val n = loopbackCount.incrementAndGet()
+                    log.i { "PropertiesChanged LOOPBACK #$n path=${signal.path} confirmed — signal reached D-Bus system bus (sent=${sentNotifyCount.get()})" }
+                }
+            }
+        } catch (e: Exception) {
+            log.w(e) { "Could not register PropertiesChanged self-listener: $e" }
+        }
         log.d { "BlueZ GATT objects exported at $APP_PATH" }
     }
 
@@ -100,16 +119,16 @@ actual class GattServer {
     }
 
     actual fun registerDevice(identifier: PebbleBleIdentifier, sendChannel: SendChannel<ByteArray>) {
-        log.d { "registerDevice: ${identifier.asString}" }
+        log.i { "registerDevice: ${identifier.asString}" }
         registeredDevices[identifier.asString] = sendChannel
     }
 
     actual fun unregisterDevice(identifier: PebbleBleIdentifier) {
-        log.d { "unregisterDevice: ${identifier.asString}" }
+        log.i { "unregisterDevice: ${identifier.asString}" }
         registeredDevices.remove(identifier.asString)
         if (registeredDevices.isEmpty()) {
             _notifySubscribed.value = false
-            log.d { "unregisterDevice: cleared notifySubscribed (no more devices)" }
+            log.i { "unregisterDevice: cleared notifySubscribed (no more devices)" }
         }
     }
 
@@ -121,12 +140,14 @@ actual class GattServer {
     ): SendResult {
         if (!_notifySubscribed.value) {
             log.d { "sendData: waiting for StartNotify (not yet subscribed)" }
-            val subscribed = withTimeoutOrNull(3_000) { _notifySubscribed.first { it } }
+            val subscribed = withTimeoutOrNull(10_000) { _notifySubscribed.first { it } }
             if (subscribed == null) {
                 log.w { "sendData: timed out waiting for StartNotify - dropping notification" }
                 return SendResult.Failed
             }
         }
+        val n = sentNotifyCount.incrementAndGet()
+        log.d { "sendData: emitting PropertiesChanged #$n (${data.size} bytes: ${data.take(4).joinToString { "%02x".format(it) }}...) notifySubscribed=${_notifySubscribed.value} loopbacksSeen=${loopbackCount.get()}" }
         return try {
             conn.sendMessage(
                 Properties.PropertiesChanged(
@@ -136,7 +157,7 @@ actual class GattServer {
                     listOf(),
                 )
             )
-            log.d { "sendData: PropertiesChanged sent (${data.size} bytes)" }
+            log.d { "sendData: sendMessage() returned without exception for #$n" }
             SendResult.Success
         } catch (e: Exception) {
             log.e(e) { "sendData failed: $e" }
@@ -145,6 +166,22 @@ actual class GattServer {
     }
 
     actual fun wasRestoredWithSubscribedCentral(): Boolean = false
+
+    actual suspend fun reAddServices() {
+        try {
+            val gattMgr = conn.getRemoteObject("org.bluez", "/org/bluez/hci0", BluezGattManager1::class.java)
+            try {
+                gattMgr.UnregisterApplication(DBusPath(APP_PATH))
+                log.i { "reAddServices: BlueZ GATT application unregistered" }
+            } catch (e: Exception) {
+                log.w(e) { "reAddServices: UnregisterApplication failed (continuing): $e" }
+            }
+            gattMgr.RegisterApplication(DBusPath(APP_PATH), emptyMap())
+            log.i { "reAddServices: BlueZ GATT application re-registered after pairing" }
+        } catch (e: Exception) {
+            log.e(e) { "reAddServices failed: $e" }
+        }
+    }
 
     private inner class AppObjectManager : ObjectManager {
         override fun isRemote() = false
@@ -180,16 +217,27 @@ actual class GattServer {
 
         override fun ReadValue(options: Map<String, Variant<*>>) = ByteArray(0)
         override fun StartNotify() {
-            log.d { "StartNotify on PPoG characteristic" }
+            log.i { "StartNotify on PPoG characteristic" }
             _notifySubscribed.value = true
         }
         override fun StopNotify() {
-            log.d { "StopNotify on PPoG characteristic" }
+            log.i { "StopNotify on PPoG characteristic" }
             _notifySubscribed.value = false
         }
 
         override fun WriteValue(value: ByteArray, options: Map<String, Variant<*>>) {
-            log.d { "WriteValue: ${value.size} bytes, ${registeredDevices.size} registered device(s)" }
+            if (registeredDevices.isEmpty()) {
+                log.w { "WriteValue: no registered devices — ${value.size} bytes dropped" }
+                return
+            }
+            // If the watch is writing to us it is connected and ready to receive notifications.
+            // Bonded devices may not re-send StartNotify on reconnect (CCCD is preserved in
+            // the bond), so unblock sendData() here rather than waiting for an explicit StartNotify.
+            if (!_notifySubscribed.value) {
+                log.i { "WriteValue received while not subscribed — assuming notifications active" }
+                _notifySubscribed.value = true
+            }
+            log.d { "WriteValue: ${value.size} bytes" }
             registeredDevices.values.forEach { it.trySend(value) }
         }
     }

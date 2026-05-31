@@ -39,6 +39,7 @@ class PPoG(
     private var closed = false
 
     fun run(requestedPpogResetViaCharacteristic: Boolean) {
+        logger.i("run(): waiting for PPoG RESET_REQUEST")
         scope.launch {
             val params = withTimeoutOrNull(30.seconds) {
                 initWaitingForResetRequest()
@@ -124,10 +125,10 @@ class PPoG(
 
     // Negotiate connection
     private suspend fun initWaitingForResetRequest(): PPoGConnectionParams {
-        logger.d("initWaitingForResetRequest")
+        logger.i("initWaitingForResetRequest: waiting for RESET_REQUEST")
 
         val resetRequest = waitForPacket<PPoGPacket.ResetRequest>()
-        logger.d("got $resetRequest")
+        logger.i("got $resetRequest")
 
         val resetCompletePacket = PPoGPacket.ResetComplete(
             sequence = 0,
@@ -150,9 +151,9 @@ class PPoG(
                 sendPacketImmediately(packet = resetCompletePacket, version = resetRequest.ppogVersion)
                 continue
             }
-            throw IllegalStateException("expected ResetComplete got $packet")
+            logger.w { "unexpected packet $packet while waiting for ResetComplete — ignoring" }
         }
-        logger.d("got $resetComplete")
+        logger.i("got $resetComplete")
 
         return PPoGConnectionParams(
             rxWindow = min(min(resetComplete.txWindow, blePlatformConfig.desiredTxWindow), MAX_SUPPORTED_WINDOW_SIZE),
