@@ -38,6 +38,7 @@ expect class GattServer {
     ): SendResult
     fun wasRestoredWithSubscribedCentral(): Boolean
     fun initServer()
+    suspend fun reAddServices()
 }
 
 class GattServerManager(
@@ -110,6 +111,10 @@ class GattServerManager(
         return gattServer?.wasRestoredWithSubscribedCentral() ?: false
     }
 
+    suspend fun reRegisterApplication() {
+        gattServer?.reAddServices()
+    }
+
     private suspend fun openIfNeeded() {
         if (config.value.reversedPPoG) {
             return
@@ -122,7 +127,7 @@ class GattServerManager(
             gattServer?.addServices()
             libPebbleCoroutineScope.launch {
                 gattServer?.characteristicReadRequest?.collect {
-                    logger.d("sending meta response")
+                    logger.i("sending meta response (watch reading META characteristic)")
                     it.respond(SERVER_META_RESPONSE)
                 }
             }
