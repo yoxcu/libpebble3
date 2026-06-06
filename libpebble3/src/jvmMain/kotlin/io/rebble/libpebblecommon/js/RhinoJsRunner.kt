@@ -117,6 +117,12 @@ class RhinoJsRunner(
             evalResource(cx, scope, "/pkjs/XMLHTTPRequest.js")
             evalResource(cx, scope, "/pkjs/startup.js")
 
+            // Cache RegExp.prototype.test results so Rhino's slow NFA engine isn't called
+            // repeatedly for the same (pattern, string) pair. Clay's tosource tests every
+            // object key against a 60-alternative reserved-word regex; with ~30 unique key
+            // names but hundreds of calls, the cache turns O(n*calls) into O(n) actual evals.
+            cx.evaluateString(scope, REGEX_TEST_CACHE_JS, "<regex-cache>", 1, null)
+
             RhinoContext.exit()
         }
         loadAppJs(jsPath.toString())
@@ -244,6 +250,19 @@ private object GeolocationStub {
     @JvmStatic fun watchPosition(id: Int, interval: Double, highAccuracy: Int): Int = 0
     @JvmStatic fun clearWatch(id: Int) {}
 }
+
+private val REGEX_TEST_CACHE_JS = """
+(function(){
+  var _orig=RegExp.prototype.test;
+  var _cache={};
+  RegExp.prototype.test=function(s){
+    if(this.global||typeof s!=='string')return _orig.call(this,s);
+    var k=this.source+'\x01'+(this.ignoreCase?'i':'')+(this.multiline?'m':'')+'\x01'+s;
+    if(k in _cache)return _cache[k];
+    return(_cache[k]=_orig.call(this,s));
+  };
+})();
+""".trimIndent()
 
 private val BOOTSTRAP_JS = """
 var console = {
