@@ -65,7 +65,7 @@ XMLHttpRequest.prototype.getAllResponseHeaders = function() {
     }
     const parts = [];
     const h = this.responseHeaders;
-    for (const key in h) {
+    for (var key in h) {
         if (Object.prototype.hasOwnProperty.call(h, key)) {
             parts.push(key + ": " + h[key]);
         }
