@@ -10,10 +10,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.newSingleThreadContext
 import kotlinx.coroutines.plus
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.io.buffered
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
@@ -46,6 +49,16 @@ class RhinoJsRunner(
     @OptIn(DelicateCoroutinesApi::class)
     private val jsThread = jsExecutor.asCoroutineDispatcher()
     private val jsScope = scope + jsThread
+    private val interruptFlag = AtomicBoolean(false)
+
+    init {
+        RhinoInterruptSupport.install()
+        // Register this runner's interrupt flag on the JS thread so the instruction observer
+        // can find it by thread ID.
+        jsExecutor.execute {
+            RhinoInterruptSupport.register(Thread.currentThread().id, interruptFlag)
+        }
+    }
     private var rhinoScope: Scriptable? = null
     private val logger = Logger.withTag("RhinoJsRunner-${appInfo.longName}")
 
@@ -135,6 +148,7 @@ class RhinoJsRunner(
 
     override suspend fun eval(js: String) {
         withContext(jsThread) {
+            interruptFlag.set(false)
             val scope = rhinoScope ?: return@withContext
             val cx = RhinoContext.enter()
             cx.languageVersion = RhinoContext.VERSION_ES6
@@ -146,6 +160,23 @@ class RhinoJsRunner(
             } finally {
                 RhinoContext.exit()
             }
+        }
+    }
+
+    override suspend fun signalShowConfiguration() {
+        // showConfiguration JS can be slow (complex regex in some watchapps). Use an 8-second
+        // watchdog that sets the interrupt flag so the instruction observer aborts execution
+        // between bytecodes if the handler hasn't finished in time.
+        val watchdog = scope.launch {
+            delay(8_000)
+            logger.w { "signalShowConfiguration taking >8s, interrupting JS" }
+            interruptFlag.set(true)
+        }
+        try {
+            eval("signalShowConfiguration()")
+        } finally {
+            watchdog.cancel()
+            interruptFlag.set(false)
         }
     }
 
@@ -173,7 +204,6 @@ class RhinoJsRunner(
     }
 
     override suspend fun signalReady() = eval("signalReady()")
-    override suspend fun signalShowConfiguration() = eval("signalShowConfiguration()")
 
     override suspend fun signalWebviewClosed(data: String?) =
         eval("signalWebviewClosedEvent(${jsStringArg(data)})")
@@ -196,7 +226,9 @@ class RhinoJsRunner(
     override fun debugForceGC() { /* Rhino does not expose GC control */ }
 
     override suspend fun stop() {
+        interruptFlag.set(true)
         withContext(jsThread) {
+            RhinoInterruptSupport.unregister(Thread.currentThread().id)
             rhinoScope = null
         }
         jsThread.close()
