@@ -485,7 +485,11 @@ class WatchManager(
                     )
                 )
             } else {
-                mutableDevices.put(identifier, existing.copy(scanResult = scanResult))
+                mutableDevices.put(identifier, existing.copy(
+                    identifier = identifier,
+                    scanResult = scanResult,
+                    connectionFailureInfo = null,
+                ))
             }
             mutableDevices
         }

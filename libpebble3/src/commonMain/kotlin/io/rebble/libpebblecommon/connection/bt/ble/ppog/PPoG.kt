@@ -47,20 +47,33 @@ class PPoG(
                 // AwaitingResetRequest waiting for us to initiate. Skip the
                 // initWaitingForResetRequest phase entirely.
                 withTimeoutOrNull(12.seconds) { initWithResetRequest() }
-                    ?: throw ConnectionException(ConnectionFailureReason.TimeoutInitializingPpog)
             } else {
                 // Forward PPoG waits for the watch to start the handshake, which it only does
                 // once it has found our GATT server and subscribed. On BlueZ that can take longer
-                // than upstream's 12s, which tore the connection down first.
+                // than upstream's 12s, which tore the connection down first. The Negotiator's 20s
+                // timeout starts at the same moment (connect() returns right after run()), so it
+                // is the effective cap: a watch that never sends a ResetRequest fails as
+                // NegotiationFailed, and by the time this 30s runs out close() has already run
+                // (so the fallbackToResetRequest window below never opens in practice).
                 withTimeoutOrNull(30.seconds) {
                     initWaitingForResetRequest()
                 } ?: withTimeoutOrNull(5.seconds) {
-                    if (blePlatformConfig.fallbackToResetRequest) {
+                    if (blePlatformConfig.fallbackToResetRequest && !closed) {
                         initWithResetRequest()
                     } else {
                         null
                     }
-                } ?: throw ConnectionException(ConnectionFailureReason.TimeoutInitializingPpog)
+                }
+            }
+            if (params == null) {
+                // A timeout after close() is the tail of a connection that already failed and is
+                // being torn down: throwing then only logged a spurious ERROR, recorded a second
+                // failure reason and started a second cleanup pass.
+                if (closed) {
+                    logger.d("PPoG init abandoned after close()")
+                    return@launch
+                }
+                throw ConnectionException(ConnectionFailureReason.TimeoutInitializingPpog)
             }
             runConnection(params)
         }
@@ -306,16 +319,27 @@ class PPoG(
                             }
                         }
 
-                        // Always logged: the watch sends these when its ack timeouts have run out,
-                        // so they are the phone-side marker of a watch reset storm.
+                        // Logged at WARN in-session: the watch sends these when its ack timeouts have
+                        // run out, so they are the phone-side marker of a watch reset storm. After
+                        // close() they are only the watch answering our close-time ResetRequest
+                        // (sendPpogResetOnDisconnection): end the session quietly instead of throwing,
+                        // which was just noise and triggered an extra cleanup pass.
                         is PPoGPacket.ResetComplete -> {
-                            logger.w("in-session $packet from watch; tearing down PPoG session")
-                            throw IllegalStateException("We don't handle resetting PPoG - disconnect and reconnect")
+                            if (closed) {
+                                logger.d("$packet after close(); ending PPoG session")
+                            } else {
+                                logger.w("in-session $packet from watch; tearing down PPoG session")
+                                throw IllegalStateException("We don't handle resetting PPoG - disconnect and reconnect")
+                            }
                         }
 
                         is PPoGPacket.ResetRequest -> {
-                            logger.w("in-session $packet from watch; tearing down PPoG session")
-                            throw IllegalStateException("We don't handle resetting PPoG - disconnect and reconnect")
+                            if (closed) {
+                                logger.d("$packet after close(); ending PPoG session")
+                            } else {
+                                logger.w("in-session $packet from watch; tearing down PPoG session")
+                                throw IllegalStateException("We don't handle resetting PPoG - disconnect and reconnect")
+                            }
                         }
                     }
                 }
