@@ -61,7 +61,7 @@ navigator.geolocation.clearWatch = (id) => {
     }
 };
 
-((global) => {
+(function(global) {
     const oldConsole = {
         log: console.log,
         warn: console.warn,
@@ -69,7 +69,8 @@ navigator.geolocation.clearWatch = (id) => {
         info: console.info,
         debug: console.debug,
     }
-    const sendLog = (level, ...args) => {
+    const sendLog = function(level) {
+        const args = Array.prototype.slice.call(arguments, 1);
         // build args into a single string
         const message = args.map((arg) => {
             if (arg instanceof Error) {
@@ -93,34 +94,41 @@ navigator.geolocation.clearWatch = (id) => {
         const traceback = new Error().stack;
         _Pebble.onConsoleLog(level, message, traceback);
     }
-    console.log = (...args) => {
+    console.log = function() {
+        const args = Array.prototype.slice.call(arguments);
         oldConsole.log.apply(console, args);
         sendLog.apply(null, ['log'].concat(args));
     }
-    console.warn = (...args) => {
+    console.warn = function() {
+        const args = Array.prototype.slice.call(arguments);
         oldConsole.warn.apply(console, args);
         sendLog.apply(null, ['warn'].concat(args));
     }
-    console.error = (...args) => {
+    console.error = function() {
+        const args = Array.prototype.slice.call(arguments);
         oldConsole.error.apply(console, args);
         sendLog.apply(null, ['error'].concat(args));
     }
-    console.info = (...args) => {
+    console.info = function() {
+        const args = Array.prototype.slice.call(arguments);
         oldConsole.info.apply(console, args);
         sendLog.apply(null, ['info'].concat(args));
     }
-    console.debug = (...args) => {
+    console.debug = function() {
+        const args = Array.prototype.slice.call(arguments);
         oldConsole.debug.apply(console, args);
         sendLog.apply(null, ['debug'].concat(args));
     }
-    console.trace = (...args) => {
+    console.trace = function() {
+        const args = Array.prototype.slice.call(arguments);
         oldConsole.trace.apply(console, args);
         const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
         const traceback = new Error().stack;
         const tracebackWithoutThis = traceback ? traceback.split('\n').slice(2).join('\n') : null;
         _Pebble.onConsoleLog('trace', message, "\n"+tracebackWithoutThis);
     }
-    console.assert = (condition, ...args) => {
+    console.assert = function(condition) {
+        const args = Array.prototype.slice.call(arguments, 1);
         if (!condition) {
             const message = "Assertion failed:" + args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
             const traceback = new Error().stack;
@@ -142,77 +150,74 @@ navigator.geolocation.clearWatch = (id) => {
     Object.freeze(PebbleEventTypes);
     const DEFAULT_TIMEOUT = 5000; // 5 seconds
 
-    class PebbleEventListener {
-        constructor() {
-            this.events = new Map();
-            this._eventInitializers = {};
-        }
-
-        addEventListener(type, callback, useCapture /* ignored */) {
-            if (typeof callback !== 'function') {
-                console.warn(`Pebble JS Bridge: addEventListener called with non-function callback for type "${type}"`);
-                return;
-            }
-
-            if (!this.events.has(type)) {
-                this.events.set(type, new Set());
-
-                // Call the event initializer if this is the first time
-                if (typeof this._eventInitializers[type] === 'function') {
-                    try {
-                        this._eventInitializers[type]();
-                    } catch(e) {
-                        console.error(`Pebble JS Bridge: Error in event initializer for "${type}"`, e);
-                    }
-                }
-            }
-            this.events.get(type).add(callback);
-        }
-
-        removeEventListener(type, callback) {
-            const listeners = this.events.get(type);
-            if (!listeners) {
-                return;
-            }
-            listeners.delete(callback);
-            if (listeners.size === 0) {
-                this.events.delete(type);
-            }
-        }
-
-        dispatchEvent(event) {
-            const listeners = this.events.get(event.type);
-            if (!listeners || listeners.size === 0) {
-                return false; // Indicate no listeners were called
-            }
-
-            // Clone the listeners to avoid modifying the set while iterating
-            const listenersCopy = Array.from(listeners);
-            let allSucceeded = true;
-
-            listenersCopy.forEach(listener => {
-                try {
-                    const removeListener = listener(event);
-                    if (removeListener === true) {
-                        listeners.delete(listener);
-                    }
-                } catch (e) {
-                    console.error(`Pebble JS Bridge: Error in listener for event "${event.type}"`, e);
-                    allSucceeded = false;
-                }
-            });
-             if (listeners.size === 0) {
-                this.events.delete(event.type);
-            }
-            return allSucceeded;
-        }
+    function PebbleEventListener() {
+        this.events = new Map();
+        this._eventInitializers = {};
     }
+
+    PebbleEventListener.prototype.addEventListener = function(type, callback, useCapture /* ignored */) {
+        if (typeof callback !== 'function') {
+            console.warn(`Pebble JS Bridge: addEventListener called with non-function callback for type "${type}"`);
+            return;
+        }
+
+        if (!this.events.has(type)) {
+            this.events.set(type, new Set());
+
+            if (typeof this._eventInitializers[type] === 'function') {
+                try {
+                    this._eventInitializers[type]();
+                } catch(e) {
+                    console.error(`Pebble JS Bridge: Error in event initializer for "${type}"`, e);
+                }
+            }
+        }
+        this.events.get(type).add(callback);
+    };
+
+    PebbleEventListener.prototype.removeEventListener = function(type, callback) {
+        const listeners = this.events.get(type);
+        if (!listeners) {
+            return;
+        }
+        listeners.delete(callback);
+        if (listeners.size === 0) {
+            this.events.delete(type);
+        }
+    };
+
+    PebbleEventListener.prototype.dispatchEvent = function(event) {
+        const listeners = this.events.get(event.type);
+        if (!listeners || listeners.size === 0) {
+            return false;
+        }
+
+        const listenersCopy = Array.from(listeners);
+        let allSucceeded = true;
+
+        listenersCopy.forEach(function(listener) {
+            try {
+                const removeListener = listener(event);
+                if (removeListener === true) {
+                    listeners.delete(listener);
+                }
+            } catch (e) {
+                console.error(`Pebble JS Bridge: Error in listener for event "${event.type}"`, e);
+                allSucceeded = false;
+            }
+        });
+        if (listeners.size === 0) {
+            this.events.delete(event.type);
+        }
+        return allSucceeded;
+    };
 
     const pebbleEventHandler = new PebbleEventListener();
     const appMessageAckCallbacks = new Map();
     const appMessageNackCallbacks = new Map();
 
-    const dispatchPebbleEvent = (type, detail = {}) => {
+    const dispatchPebbleEvent = (type, detail) => {
+        if (detail === undefined) detail = {};
         const event = {type: type, bubbles: false, cancelable: false};
         Object.assign(event, detail);
         return pebbleEventHandler.dispatchEvent(event);
@@ -309,7 +314,7 @@ navigator.geolocation.clearWatch = (id) => {
                 return -1;
             }
             if (onSuccess) {
-                const callback = (e) => {
+                const ackCallback = (e) => {
                     try {
                         if (e.payload.data.transactionId === transactionId) {
                             onSuccess(e.payload);
@@ -318,11 +323,11 @@ navigator.geolocation.clearWatch = (id) => {
                         console.error("PKJS Error in app message success callback", error);
                     }
                 }
-                appMessageAckCallbacks.set(transactionId, callback);
-                pebbleEventHandler.addEventListener(PebbleEventTypes.APP_MESSAGE_ACK, callback);
+                appMessageAckCallbacks.set(transactionId, ackCallback);
+                pebbleEventHandler.addEventListener(PebbleEventTypes.APP_MESSAGE_ACK, ackCallback);
             }
             if (onFailure) {
-                const callback = (e) => {
+                const nackCallback = (e) => {
                     try {
                         if (e.payload.data.transactionId === transactionId) {
                             onFailure(e.payload, e.payload.error);
@@ -331,8 +336,8 @@ navigator.geolocation.clearWatch = (id) => {
                         console.error("PKJS Error in app message failure callback", error);
                     }
                 }
-                appMessageNackCallbacks.set(transactionId, callback);
-                pebbleEventHandler.addEventListener(PebbleEventTypes.APP_MESSAGE_NACK, callback);
+                appMessageNackCallbacks.set(transactionId, nackCallback);
+                pebbleEventHandler.addEventListener(PebbleEventTypes.APP_MESSAGE_NACK, nackCallback);
             }
             return transactionId;
         },
