@@ -2,7 +2,7 @@ package io.rebble.libpebblecommon.js
 
 import io.rebble.libpebblecommon.connection.AppContext
 
-class RhinoJSLocalStorageInterface(
+class GraalJSLocalStorageInterface(
     scopedSettingsUuid: String,
     appContext: AppContext,
 ) : JSLocalStorageInterface(scopedSettingsUuid, appContext) {

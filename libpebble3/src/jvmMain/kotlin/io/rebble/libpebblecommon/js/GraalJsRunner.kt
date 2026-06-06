@@ -10,19 +10,20 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.newSingleThreadContext
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.plus
 import kotlinx.coroutines.withContext
 import kotlinx.io.buffered
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.readString
-import org.mozilla.javascript.Context as RhinoContext
-import org.mozilla.javascript.Scriptable
-import org.mozilla.javascript.ScriptableObject
+import org.graalvm.polyglot.Context as GraalContext
+import org.graalvm.polyglot.HostAccess
+import org.graalvm.polyglot.PolyglotException
 
-class RhinoJsRunner(
+class GraalJsRunner(
     private val appContext: AppContext,
     private val libPebble: LibPebble,
     private val jsTokenUtil: JsTokenUtil,
@@ -38,96 +39,72 @@ class RhinoJsRunner(
     private val notificationConfigFlow: NotificationConfigFlow,
 ) : JsRunner(appInfo, lockerEntry, jsPath, device, urlOpenRequests) {
 
-    // 8 MB stack: Rhino's regex engine recurses deeply for complex patterns;
-    // the default JVM thread stack (512 KB on Linux) overflows on some watchapp config pages.
     private val jsExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
-        Thread(null, r, "JSRunner-${appInfo.uuid}", 8 * 1024 * 1024)
+        Thread(null, r, "JSRunner-${appInfo.uuid}", 4 * 1024 * 1024)
     }
     @OptIn(DelicateCoroutinesApi::class)
     private val jsThread = jsExecutor.asCoroutineDispatcher()
     private val jsScope = scope + jsThread
-    private var rhinoScope: Scriptable? = null
-    private val logger = Logger.withTag("RhinoJsRunner-${appInfo.longName}")
 
-    // evalFn callable from non-suspend contexts (XHR/timeout callbacks that have already
-    // switched to jsThread via withContext).
+    @Volatile private var jsContext: GraalContext? = null
+    private val logger = Logger.withTag("GraalJsRunner-${appInfo.longName}")
+
     private val evalFn: (String) -> Unit = { js ->
-        val scope = rhinoScope
-        if (scope != null) {
-            val cx = RhinoContext.enter()
-            cx.languageVersion = RhinoContext.VERSION_ES6
-            cx.optimizationLevel = -1
-            try {
-                cx.evaluateString(scope, js, "<callback>", 1, null)
-            } catch (e: Throwable) {
-                logger.e(e) { "JS callback error: ${e.message}" }
-            } finally {
-                RhinoContext.exit()
-            }
+        try {
+            jsContext?.eval("js", js)
+        } catch (e: PolyglotException) {
+            if (!e.isInterrupted) logger.e(e) { "JS callback error: ${e.message}" }
         }
     }
 
     override suspend fun start() {
         withContext(jsThread) {
-            val cx = RhinoContext.enter()
-            cx.languageVersion = RhinoContext.VERSION_ES6
-            cx.optimizationLevel = -1  // interpreter mode: avoids classloader issues
-            val scope = cx.initStandardObjects()
-            rhinoScope = scope
+            val ctx = GraalContext.newBuilder("js")
+                .allowHostAccess(HostAccess.ALL)
+                .allowHostClassLookup { _ -> false }
+                .build()
+            jsContext = ctx
 
+            val bindings = ctx.getBindings("js")
             val xhrManager = JvmXMLHTTPRequestManager(jsScope, jsThread, evalFn, appInfo)
             val timeoutManager = JvmJSTimeout(jsScope, jsThread, evalFn)
-            val pkjsIface = JvmPKJSInterface(this@RhinoJsRunner, device, libPebble, jsTokenUtil)
+            val pkjsIface = JvmPKJSInterface(this@GraalJsRunner, device, libPebble, jsTokenUtil)
             val privatePkjsIface = JvmPrivatePKJSInterface(
-                this@RhinoJsRunner, device, jsScope,
+                this@GraalJsRunner, device, jsScope,
                 _outgoingAppMessages, logMessages, jsTokenUtil,
                 remoteTimelineEmulator, httpInterceptorManager, notificationConfigFlow,
             )
+            val localStorage = GraalJSLocalStorageInterface(appInfo.uuid, appContext)
 
-            fun put(name: String, obj: Any) {
-                ScriptableObject.putProperty(scope, name, RhinoContext.javaToJS(obj, scope))
-            }
+            bindings.putMember("_pebblePublicNative", pkjsIface)
+            bindings.putMember("_Pebble", privatePkjsIface)
+            bindings.putMember("_XMLHTTPRequestManager", xhrManager)
+            bindings.putMember("_Timeout", timeoutManager)
+            bindings.putMember("_PebbleGeo", GraalGeolocationStub())
+            bindings.putMember("localStorage", localStorage)
 
-            val localStorage = RhinoJSLocalStorageInterface(appInfo.uuid, appContext)
-
-            put("_pebblePublicNative", pkjsIface)
-            put("_Pebble", privatePkjsIface)
-            put("_XMLHTTPRequestManager", xhrManager)
-            put("_Timeout", timeoutManager)
-            put("_PebbleGeo", GeolocationStub)
-            put("localStorage", localStorage)
-
-            // Bootstrap: console stub + navigator + Pebble JS wrapper
-            cx.evaluateString(scope, BOOTSTRAP_JS, "<bootstrap>", 1, null)
-
-            evalResource(cx, scope, "/pkjs/JSTimeout.js")
-            evalResource(cx, scope, "/pkjs/XMLHTTPRequest.js")
-            evalResource(cx, scope, "/pkjs/startup.js")
-
-            RhinoContext.exit()
+            ctx.eval("js", BOOTSTRAP_JS)
+            evalResource(ctx, "/pkjs/JSTimeout.js")
+            evalResource(ctx, "/pkjs/XMLHTTPRequest.js")
+            evalResource(ctx, "/pkjs/startup.js")
         }
         loadAppJs(jsPath.toString())
     }
 
-    private fun evalResource(cx: RhinoContext, scope: Scriptable, resourcePath: String) {
-        val content = RhinoJsRunner::class.java.getResourceAsStream(resourcePath)?.bufferedReader()?.readText()
+    private fun evalResource(ctx: GraalContext, resourcePath: String) {
+        val content = GraalJsRunner::class.java.getResourceAsStream(resourcePath)?.bufferedReader()?.readText()
             ?: error("JS resource not found: $resourcePath")
-        cx.evaluateString(scope, content, resourcePath, 1, null)
+        ctx.eval("js", content)
     }
 
     override suspend fun loadAppJs(jsUrl: String) {
         withContext(jsThread) {
+            val ctx = jsContext ?: return@withContext
             val content = SystemFileSystem.source(Path(jsUrl)).buffered().use { it.readString() }
-            val scope = rhinoScope ?: return@withContext
-            val cx = RhinoContext.enter()
-            cx.languageVersion = RhinoContext.VERSION_ES6
-            cx.optimizationLevel = -1
             try {
-                cx.evaluateString(scope, content, "${appInfo.uuid}.js", 1, null)
-            } catch (e: Throwable) {
+                ctx.eval("js", content)
+            } catch (e: PolyglotException) {
                 logger.e(e) { "Error loading app JS: ${e.message}" }
-            } finally {
-                RhinoContext.exit()
             }
         }
         signalReady()
@@ -135,32 +112,45 @@ class RhinoJsRunner(
 
     override suspend fun eval(js: String) {
         withContext(jsThread) {
-            val scope = rhinoScope ?: return@withContext
-            val cx = RhinoContext.enter()
-            cx.languageVersion = RhinoContext.VERSION_ES6
-            cx.optimizationLevel = -1
+            val ctx = jsContext ?: return@withContext
             try {
-                cx.evaluateString(scope, js, "<eval>", 1, null)
-            } catch (e: Throwable) {
-                logger.e(e) { "JS eval error: ${e.message}" }
-            } finally {
-                RhinoContext.exit()
+                ctx.eval("js", js)
+            } catch (e: PolyglotException) {
+                if (e.isInterrupted) logger.i { "JS execution interrupted" }
+                else logger.e(e) { "JS eval error: ${e.message}" }
             }
         }
     }
 
-    override suspend fun evalWithResult(js: String): Any? = withContext(jsThread) {
-        val scope = rhinoScope ?: return@withContext null
-        val cx = RhinoContext.enter()
-        cx.languageVersion = RhinoContext.VERSION_ES6
-        cx.optimizationLevel = -1
+    override suspend fun signalShowConfiguration() {
+        val ctx = jsContext ?: return
+        val watchdog = scope.launch {
+            delay(30_000)
+            logger.w { "signalShowConfiguration taking >30s, interrupting JS" }
+            try { ctx.interrupt(java.time.Duration.ofSeconds(5)) } catch (_: Exception) {}
+        }
         try {
-            cx.evaluateString(scope, js, "<eval>", 1, null)
-        } catch (e: Throwable) {
+            eval("signalShowConfiguration()")
+        } finally {
+            watchdog.cancel()
+        }
+    }
+
+    override suspend fun evalWithResult(js: String): Any? = withContext(jsThread) {
+        val ctx = jsContext ?: return@withContext null
+        try {
+            val v = ctx.eval("js", js)
+            when {
+                v.isNull -> null
+                v.isString -> v.asString()
+                v.isBoolean -> v.asBoolean()
+                v.fitsInLong() -> v.asLong()
+                v.isNumber -> v.asDouble()
+                else -> v
+            }
+        } catch (e: PolyglotException) {
             logger.e(e) { "evalWithResult error: ${e.message}" }
             null
-        } finally {
-            RhinoContext.exit()
         }
     }
 
@@ -173,7 +163,6 @@ class RhinoJsRunner(
     }
 
     override suspend fun signalReady() = eval("signalReady()")
-    override suspend fun signalShowConfiguration() = eval("signalShowConfiguration()")
 
     override suspend fun signalWebviewClosed(data: String?) =
         eval("signalWebviewClosedEvent(${jsStringArg(data)})")
@@ -193,24 +182,25 @@ class RhinoJsRunner(
         eval("signalTimelineTokenFailure(${jsStringArg(json)})")
     }
 
-    override fun debugForceGC() { /* Rhino does not expose GC control */ }
+    override fun debugForceGC() { /* GraalJS does not expose GC control */ }
 
     override suspend fun stop() {
         withContext(jsThread) {
-            rhinoScope = null
+            jsContext?.close()
+            jsContext = null
         }
         jsThread.close()
         jsExecutor.shutdown()
     }
 }
 
-private object GeolocationStub {
-    @JvmField val unsupported = true
-    @JvmStatic fun getRequestCallbackID(): Int = 0
-    @JvmStatic fun getWatchCallbackID(): Int = 0
-    @JvmStatic fun getCurrentPosition(id: Int, maxAge: Double, timeout: Double, highAccuracy: Int) {}
-    @JvmStatic fun watchPosition(id: Int, interval: Double, highAccuracy: Int): Int = 0
-    @JvmStatic fun clearWatch(id: Int) {}
+class GraalGeolocationStub {
+    val unsupported: Boolean = true
+    fun getRequestCallbackID(): Int = 0
+    fun getWatchCallbackID(): Int = 0
+    fun getCurrentPosition(id: Int, maxAge: Double, timeout: Double, highAccuracy: Int) {}
+    fun watchPosition(id: Int, interval: Double, highAccuracy: Int): Int = 0
+    fun clearWatch(id: Int) {}
 }
 
 private val BOOTSTRAP_JS = """
