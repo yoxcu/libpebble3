@@ -187,7 +187,7 @@ navigator.geolocation.clearWatch = (id) => {
             }
 
             // Clone the listeners to avoid modifying the set while iterating
-            const listenersCopy = [...listeners];
+            const listenersCopy = Array.from(listeners);
             let allSucceeded = true;
 
             listenersCopy.forEach(listener => {
