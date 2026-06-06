@@ -66,7 +66,7 @@ class PKJSApp(
     val uuid: Uuid by lazy { Uuid.parse(appInfo.uuid) }
     private var jsRunner: JsRunner? = null
     private var runningScope: CoroutineScope? = null
-    private val urlOpenRequests = Channel<String>(Channel.RENDEZVOUS)
+    private val urlOpenRequests = Channel<String>(1)
 
     private val _logMessages = Channel<String>(2, BufferOverflow.DROP_OLDEST)
     val logMessages: ReceiveChannel<String> = _logMessages
