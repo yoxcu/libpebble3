@@ -8,6 +8,9 @@ import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -78,15 +81,12 @@ class JvmXMLHTTPRequestManager(
                     "arraybuffer" -> Base64.getEncoder().encodeToString(response.body())
                     else -> String(response.body(), Charsets.UTF_8)
                 }
-                val headersJson = buildString {
-                    append("{")
-                    response.headers().map().entries.joinTo(this, ",") { (k, v) ->
-                        val escaped = v.joinToString(", ").replace("\\", "\\\\").replace("\"", "\\\"")
-                        "\"${k.lowercase()}\":\"$escaped\""
+                val headersJson = buildJsonObject {
+                    response.headers().map().entries.forEach { (k, v) ->
+                        put(k.lowercase(), v.joinToString(", "))
                     }
-                    append("}")
-                }
-                val escapedBody = responseBody.replace("\\", "\\\\").replace("'", "\\'")
+                }.toString()
+                val bodyJson = Json.encodeToString(responseBody)
                 val status = response.statusCode()
 
                 withContext(jsThread) {
@@ -94,7 +94,7 @@ class JvmXMLHTTPRequestManager(
                         var xhr=XMLHttpRequest._instances.get($instanceId);
                         if(!xhr)return;
                         xhr.readyState=4;
-                        xhr._onResponseComplete($headersJson,$status,'$status','$escapedBody');
+                        xhr._onResponseComplete($headersJson,$status,'$status',$bodyJson);
                         xhr._dispatchEvent('readystatechange',{});
                         xhr._dispatchEvent('load',{});
                         xhr._dispatchEvent('loadend',{});
