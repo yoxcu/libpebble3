@@ -206,6 +206,7 @@ kotlin {
         jvmMain.dependencies {
             implementation("com.github.hypfvieh:dbus-java-core:5.2.0")
             implementation("com.github.hypfvieh:dbus-java-transport-native-unixsocket:5.2.0")
+            implementation("org.mozilla:rhino:1.7.15")
         }
 
         jvmTest.dependencies {
