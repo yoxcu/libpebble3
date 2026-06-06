@@ -51,16 +51,8 @@ abstract class PrivatePKJSInterface(
             val redact = notificationConfigFlow.value.obfuscateContent &&
                 sensitiveTerms.any { term -> message.contains(term, ignoreCase = true) }
             buildString {
-                append("[PKJS:${level.uppercase()}] \"")
-                if (redact) {
-                    append("<REDACTED>")
-                } else {
-                    append(message)
-                }
-                append("\" ")
-                source?.let {
-                    append(source)
-                }
+                append("[PKJS:${level.uppercase()}] ")
+                if (redact) append("<REDACTED>") else append(message)
             }
         }
         val lineNumber = source
