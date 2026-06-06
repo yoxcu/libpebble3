@@ -64,6 +64,7 @@ actual val platformModule: Module = module {
         BlePlatformConfig(
             delayBleConnectionsAfterAppStart = false,
             delayBleDisconnections = false,
+            sendPpogResetOnDisconnection = true,
             supportsBtClassic = false,
         )
     }
