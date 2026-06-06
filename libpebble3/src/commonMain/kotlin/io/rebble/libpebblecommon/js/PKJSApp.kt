@@ -152,7 +152,7 @@ class PKJSApp(
                url.cancel()
                return null
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             url.cancel()
             logger.e(e) { "Error signalling show configuration" }
             return null
