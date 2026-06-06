@@ -2,14 +2,14 @@ globalThis._LibPebbleTimeoutCallbacks = new Map();
 globalThis._LibPebbleTriggerTimeout = function (timeoutId) {
     if (globalThis._LibPebbleTimeoutCallbacks.has(timeoutId)) {
         const { callback, args } = globalThis._LibPebbleTimeoutCallbacks.get(timeoutId);
-        callback(...args);
+        callback.apply(null, args);
         globalThis._LibPebbleTimeoutCallbacks.delete(timeoutId);
     }
 }
 globalThis._LibPebbleTriggerInterval = function (intervalId) {
     if (globalThis._LibPebbleTimeoutCallbacks.has(intervalId)) {
         const { callback, args } = globalThis._LibPebbleTimeoutCallbacks.get(intervalId);
-        callback(...args);
+        callback.apply(null, args);
     }
 }
 // Match browser behavior: a string callback is compiled with `new Function`,
