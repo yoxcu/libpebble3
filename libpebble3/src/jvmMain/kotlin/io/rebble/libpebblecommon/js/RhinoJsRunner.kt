@@ -8,6 +8,7 @@ import io.rebble.libpebblecommon.database.entity.LockerEntry
 import io.rebble.libpebblecommon.metadata.pbw.appinfo.PbwAppInfo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.newSingleThreadContext
@@ -37,8 +38,13 @@ class RhinoJsRunner(
     private val notificationConfigFlow: NotificationConfigFlow,
 ) : JsRunner(appInfo, lockerEntry, jsPath, device, urlOpenRequests) {
 
+    // 8 MB stack: Rhino's regex engine recurses deeply for complex patterns;
+    // the default JVM thread stack (512 KB on Linux) overflows on some watchapp config pages.
+    private val jsExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(null, r, "JSRunner-${appInfo.uuid}", 8 * 1024 * 1024)
+    }
     @OptIn(DelicateCoroutinesApi::class)
-    private val jsThread = newSingleThreadContext("JSRunner-${appInfo.uuid}")
+    private val jsThread = jsExecutor.asCoroutineDispatcher()
     private val jsScope = scope + jsThread
     private var rhinoScope: Scriptable? = null
     private val logger = Logger.withTag("RhinoJsRunner-${appInfo.longName}")
@@ -53,7 +59,7 @@ class RhinoJsRunner(
             cx.optimizationLevel = -1
             try {
                 cx.evaluateString(scope, js, "<callback>", 1, null)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 logger.e(e) { "JS callback error: ${e.message}" }
             } finally {
                 RhinoContext.exit()
@@ -118,7 +124,7 @@ class RhinoJsRunner(
             cx.optimizationLevel = -1
             try {
                 cx.evaluateString(scope, content, "${appInfo.uuid}.js", 1, null)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 logger.e(e) { "Error loading app JS: ${e.message}" }
             } finally {
                 RhinoContext.exit()
@@ -135,7 +141,7 @@ class RhinoJsRunner(
             cx.optimizationLevel = -1
             try {
                 cx.evaluateString(scope, js, "<eval>", 1, null)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 logger.e(e) { "JS eval error: ${e.message}" }
             } finally {
                 RhinoContext.exit()
@@ -150,7 +156,7 @@ class RhinoJsRunner(
         cx.optimizationLevel = -1
         try {
             cx.evaluateString(scope, js, "<eval>", 1, null)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             logger.e(e) { "evalWithResult error: ${e.message}" }
             null
         } finally {
@@ -194,6 +200,7 @@ class RhinoJsRunner(
             rhinoScope = null
         }
         jsThread.close()
+        jsExecutor.shutdown()
     }
 }
 

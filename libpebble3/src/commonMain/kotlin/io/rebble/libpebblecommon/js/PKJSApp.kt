@@ -172,16 +172,23 @@ class PKJSApp(
         val url = runningScope!!.async { urlOpenRequests.receive() }
         try {
             jsRunner.signalShowConfiguration()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // Throwable, not Exception: a JVM Error (e.g. StackOverflowError from a deeply
+            // recursive config-page script) must not escape and kill the coroutine.
             url.cancel()
             logger.e(e) { "Error signalling show configuration" }
             return null
         }
         // Apps can declare "configurable" and never call Pebble.openURL(), so this must be bounded.
-        return withTimeoutOrNull(CONFIGURATION_URL_TIMEOUT) { url.await() } ?: run {
+        return try {
+            withTimeoutOrNull(CONFIGURATION_URL_TIMEOUT) { url.await() } ?: run {
+                logger.e { "Timed out waiting for configuration URL" }
+                null
+            }
+        } finally {
+            // Also when the caller cancels (e.g. its own shorter timeout), which skips the branch
+            // above: an orphaned receive() in runningScope would take the next request's URL.
             url.cancel()
-            logger.e { "Timed out waiting for configuration URL" }
-            null
         }
     }
 
