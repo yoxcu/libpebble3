@@ -40,7 +40,6 @@ expect class GattServer {
     ): SendResult
     fun wasRestoredWithSubscribedCentral(): Boolean
     fun initServer()
-    suspend fun reAddServices()
 }
 
 class GattServerManager(
@@ -120,10 +119,6 @@ class GattServerManager(
 
     fun wasRestoredWithSubscribedCentral(): Boolean {
         return gattServer?.wasRestoredWithSubscribedCentral() ?: false
-    }
-
-    suspend fun reRegisterApplication() {
-        gattServer?.reAddServices()
     }
 
     private suspend fun openIfNeeded() {

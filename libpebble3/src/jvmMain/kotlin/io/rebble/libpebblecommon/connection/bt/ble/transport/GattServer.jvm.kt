@@ -23,7 +23,6 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.uuid.Uuid
-import java.util.concurrent.atomic.AtomicInteger
 
 private val log = Logger.withTag("BluezGattServer")
 
@@ -73,28 +72,10 @@ actual class GattServer {
     actual val characteristicReadRequest: Flow<ServerCharacteristicReadRequest> =
         _readRequests.asSharedFlow()
 
-    private val sentNotifyCount = AtomicInteger(0)
-    private val loopbackCount = AtomicInteger(0)
-
     actual fun initServer() {
         conn.exportObject(APP_PATH, AppObjectManager())
         conn.exportObject(PPOG_CHAR_PATH, PPoGCharacteristic())
         conn.exportObject(META_CHAR_PATH, MetaCharacteristic())
-        // Self-listener: if the D-Bus daemon delivers our own PropertiesChanged back to us,
-        // dbus-java IS actually emitting the signal on the bus. If sendData logs "sent" but
-        // this never fires, the signal is being silently swallowed in the async executor.
-        try {
-            conn.addSigHandler(Properties.PropertiesChanged::class.java) { signal ->
-                if (signal.getInterfaceName() == "org.bluez.GattCharacteristic1" &&
-                    signal.getPropertiesChanged().containsKey("Value")
-                ) {
-                    val n = loopbackCount.incrementAndGet()
-                    log.i { "PropertiesChanged LOOPBACK #$n path=${signal.path} confirmed — signal reached D-Bus system bus (sent=${sentNotifyCount.get()})" }
-                }
-            }
-        } catch (e: Exception) {
-            log.w(e) { "Could not register PropertiesChanged self-listener: $e" }
-        }
         log.d { "BlueZ GATT objects exported at $APP_PATH" }
     }
 
@@ -146,8 +127,7 @@ actual class GattServer {
                 return SendResult.Failed
             }
         }
-        val n = sentNotifyCount.incrementAndGet()
-        log.d { "sendData: emitting PropertiesChanged #$n (${data.size} bytes: ${data.take(4).joinToString { "%02x".format(it) }}...) notifySubscribed=${_notifySubscribed.value} loopbacksSeen=${loopbackCount.get()}" }
+        log.d { "sendData: emitting PropertiesChanged (${data.size} bytes)" }
         return try {
             conn.sendMessage(
                 Properties.PropertiesChanged(
@@ -157,7 +137,6 @@ actual class GattServer {
                     listOf(),
                 )
             )
-            log.d { "sendData: sendMessage() returned without exception for #$n" }
             SendResult.Success
         } catch (e: Exception) {
             log.e(e) { "sendData failed: $e" }
@@ -166,22 +145,6 @@ actual class GattServer {
     }
 
     actual fun wasRestoredWithSubscribedCentral(): Boolean = false
-
-    actual suspend fun reAddServices() {
-        try {
-            val gattMgr = conn.getRemoteObject("org.bluez", "/org/bluez/hci0", BluezGattManager1::class.java)
-            try {
-                gattMgr.UnregisterApplication(DBusPath(APP_PATH))
-                log.i { "reAddServices: BlueZ GATT application unregistered" }
-            } catch (e: Exception) {
-                log.w(e) { "reAddServices: UnregisterApplication failed (continuing): $e" }
-            }
-            gattMgr.RegisterApplication(DBusPath(APP_PATH), emptyMap())
-            log.i { "reAddServices: BlueZ GATT application re-registered after pairing" }
-        } catch (e: Exception) {
-            log.e(e) { "reAddServices failed: $e" }
-        }
-    }
 
     private inner class AppObjectManager : ObjectManager {
         override fun isRemote() = false
