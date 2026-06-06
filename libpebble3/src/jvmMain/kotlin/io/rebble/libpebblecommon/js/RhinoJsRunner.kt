@@ -69,7 +69,7 @@ class RhinoJsRunner(
         if (scope != null) {
             val cx = RhinoContext.enter()
             cx.languageVersion = RhinoContext.VERSION_ES6
-            cx.optimizationLevel = -1
+            cx.optimizationLevel = 0
             try {
                 cx.evaluateString(scope, js, "<callback>", 1, null)
             } catch (e: Throwable) {
@@ -84,7 +84,7 @@ class RhinoJsRunner(
         withContext(jsThread) {
             val cx = RhinoContext.enter()
             cx.languageVersion = RhinoContext.VERSION_ES6
-            cx.optimizationLevel = -1  // interpreter mode: avoids classloader issues
+            cx.optimizationLevel = 0
             val scope = cx.initStandardObjects()
             rhinoScope = scope
 
@@ -134,7 +134,7 @@ class RhinoJsRunner(
             val scope = rhinoScope ?: return@withContext
             val cx = RhinoContext.enter()
             cx.languageVersion = RhinoContext.VERSION_ES6
-            cx.optimizationLevel = -1
+            cx.optimizationLevel = 0
             try {
                 cx.evaluateString(scope, content, "${appInfo.uuid}.js", 1, null)
             } catch (e: Throwable) {
@@ -152,7 +152,7 @@ class RhinoJsRunner(
             val scope = rhinoScope ?: return@withContext
             val cx = RhinoContext.enter()
             cx.languageVersion = RhinoContext.VERSION_ES6
-            cx.optimizationLevel = -1
+            cx.optimizationLevel = 0
             try {
                 cx.evaluateString(scope, js, "<eval>", 1, null)
             } catch (e: Throwable) {
@@ -184,7 +184,7 @@ class RhinoJsRunner(
         val scope = rhinoScope ?: return@withContext null
         val cx = RhinoContext.enter()
         cx.languageVersion = RhinoContext.VERSION_ES6
-        cx.optimizationLevel = -1
+        cx.optimizationLevel = 0
         try {
             cx.evaluateString(scope, js, "<eval>", 1, null)
         } catch (e: Throwable) {
