@@ -4,4 +4,4 @@ import io.rebble.libpebblecommon.connection.AppContext
 import kotlinx.io.files.Path
 
 actual fun getFirmwareDownloadDirectory(context: AppContext): Path =
-    Path(System.getProperty("user.home"), ".local", "share", "stoandl", "firmware")
+    Path(System.getProperty("user.home"), ".config", "stoandl", "firmware")
