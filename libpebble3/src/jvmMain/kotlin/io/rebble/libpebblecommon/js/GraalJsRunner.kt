@@ -62,9 +62,6 @@ class GraalJsRunner(
             val ctx = GraalContext.newBuilder("js")
                 .allowHostAccess(HostAccess.ALL)
                 .allowHostClassLookup { _ -> false }
-                .allowExperimentalOptions(true)
-                .option("js.esversion", "2022")
-                .option("js.foreign-object-prototype", "true")
                 .build()
             jsContext = ctx
 
