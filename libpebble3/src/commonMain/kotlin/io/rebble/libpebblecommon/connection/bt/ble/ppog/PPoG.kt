@@ -272,8 +272,8 @@ class PPoG(
                             }
                         }
 
-                        is PPoGPacket.ResetComplete -> throw IllegalStateException("We don't handle resetting PPoG - disconnect and reconnect")
-                        is PPoGPacket.ResetRequest -> throw IllegalStateException("We don't handle resetting PPoG - disconnect and reconnect")
+                        is PPoGPacket.ResetComplete -> if (!closed) throw IllegalStateException("We don't handle resetting PPoG - disconnect and reconnect")
+                        is PPoGPacket.ResetRequest -> if (!closed) throw IllegalStateException("We don't handle resetting PPoG - disconnect and reconnect")
                     }
                 }
             }
