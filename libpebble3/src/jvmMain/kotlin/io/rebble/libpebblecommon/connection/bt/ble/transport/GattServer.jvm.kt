@@ -26,7 +26,7 @@ import kotlin.uuid.Uuid
 
 private val log = Logger.withTag("BluezGattServer")
 
-private const val APP_PATH = "/io/gravel/gatt"
+private const val APP_PATH = "/io/stoandl/gatt"
 private const val SERVICE_PATH = "$APP_PATH/service0"
 private const val PPOG_CHAR_PATH = "$SERVICE_PATH/char0"
 private const val META_CHAR_PATH = "$SERVICE_PATH/char1"
