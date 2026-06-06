@@ -95,23 +95,23 @@ navigator.geolocation.clearWatch = (id) => {
     }
     console.log = (...args) => {
         oldConsole.log.apply(console, args);
-        sendLog('log', ...args);
+        sendLog.apply(null, ['log'].concat(args));
     }
     console.warn = (...args) => {
         oldConsole.warn.apply(console, args);
-        sendLog('warn', ...args);
+        sendLog.apply(null, ['warn'].concat(args));
     }
     console.error = (...args) => {
         oldConsole.error.apply(console, args);
-        sendLog('error', ...args);
+        sendLog.apply(null, ['error'].concat(args));
     }
     console.info = (...args) => {
         oldConsole.info.apply(console, args);
-        sendLog('info', ...args);
+        sendLog.apply(null, ['info'].concat(args));
     }
     console.debug = (...args) => {
         oldConsole.debug.apply(console, args);
-        sendLog('debug', ...args);
+        sendLog.apply(null, ['debug'].concat(args));
     }
     console.trace = (...args) => {
         oldConsole.trace.apply(console, args);
