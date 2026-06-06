@@ -22,7 +22,7 @@ import org.mozilla.javascript.Scriptable
 import org.mozilla.javascript.ScriptableObject
 
 class RhinoJsRunner(
-    @Suppress("unused") private val appContext: AppContext,
+    private val appContext: AppContext,
     private val libPebble: LibPebble,
     private val jsTokenUtil: JsTokenUtil,
     device: CompanionAppDevice,
@@ -82,11 +82,14 @@ class RhinoJsRunner(
                 ScriptableObject.putProperty(scope, name, RhinoContext.javaToJS(obj, scope))
             }
 
+            val localStorage = RhinoJSLocalStorageInterface(appInfo.uuid, appContext)
+
             put("_pebblePublicNative", pkjsIface)
             put("_Pebble", privatePkjsIface)
             put("_XMLHTTPRequestManager", xhrManager)
             put("_Timeout", timeoutManager)
             put("_PebbleGeo", GeolocationStub)
+            put("localStorage", localStorage)
 
             // Bootstrap: console stub + navigator + Pebble JS wrapper
             cx.evaluateString(scope, BOOTSTRAP_JS, "<bootstrap>", 1, null)
