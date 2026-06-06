@@ -1,14 +1,14 @@
 package io.rebble.libpebblecommon.di
 
+import io.rebble.libpebblecommon.js.GraalJsRunner
 import io.rebble.libpebblecommon.js.JsRunner
-import io.rebble.libpebblecommon.js.RhinoJsRunner
 import org.koin.core.module.Module
 import org.koin.dsl.bind
 import org.koin.dsl.module
 
 actual val pkjsPlatformModule: Module = module {
     factory { params ->
-        RhinoJsRunner(
+        GraalJsRunner(
             appContext = get(),
             libPebble = get(),
             jsTokenUtil = get(),
