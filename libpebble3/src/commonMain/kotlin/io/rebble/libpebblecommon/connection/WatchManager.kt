@@ -671,29 +671,38 @@ class WatchManager(
                 logger.w("$identifier: already done cleanup")
                 return@async
             }
-            logger.d("$identifier: cleanup")
-            pebbleConnector.disconnect()
             try {
-                // TODO can this break when BT gets disabled? we call this, it times out, ...
-                withTimeout(DISCONNECT_TIMEOUT) {
-                    logger.d("$identifier: cleanup: waiting for disconnection")
-                    pebbleConnector.disconnected.disconnected.await()
+                logger.d("$identifier: cleanup")
+                pebbleConnector.disconnect()
+                try {
+                    // TODO can this break when BT gets disabled? we call this, it times out, ...
+                    withTimeout(DISCONNECT_TIMEOUT) {
+                        logger.d("$identifier: cleanup: waiting for disconnection")
+                        pebbleConnector.disconnected.disconnected.await()
+                    }
+                } catch (e: TimeoutCancellationException) {
+                    logger.w("cleanup: timed out waiting for disconnection from $identifier")
                 }
-            } catch (e: TimeoutCancellationException) {
-                logger.w("cleanup: timed out waiting for disconnection from $identifier")
+                logger.d("$identifier: cleanup: removing active device")
+                logger.d("$identifier: cleanup: cancelling scope")
+                close()
+                // This is essentially a hack to work around the case where we disconnect+reconnect so
+                // fast that the watch doesn't realize. Wait a little bit before trying to connect
+                // again
+                if (blePlatformConfig.delayBleDisconnections) {
+                    logger.d { "delaying before marking as disconnected.." }
+                    delay(APP_START_WAIT_TO_CONNECT)
+                }
+            } finally {
+                // ALWAYS release the connection slot, even if disconnect()/await above threw (e.g. a
+                // PPoG reset failure during a messy out-of-range disconnect). `closed` is already
+                // set, so cleanup() never runs again — if we skipped this, the identifier would leak
+                // in activeConnections forever, making hasConnectionAttempt permanently true so the
+                // connect driver never calls connectTo() again ("Already connecting (this is a
+                // bug)") and the watch can never reconnect.
+                activeConnections.remove(identifier)
+                updateWatch(identifier) { it.copy(activeConnection = null) }
             }
-            logger.d("$identifier: cleanup: removing active device")
-            logger.d("$identifier: cleanup: cancelling scope")
-            close()
-            // This is essentially a hack to work around the case where we disconnect+reconnect so
-            // fast that the watch doesn't realize. Wait a little bit before trying to connect
-            // again
-            if (blePlatformConfig.delayBleDisconnections) {
-                logger.d { "delaying before marking as disconnected.." }
-                delay(APP_START_WAIT_TO_CONNECT)
-            }
-            activeConnections.remove(identifier)
-            updateWatch(identifier) { it.copy(activeConnection = null) }
         }.await()
     }
 
