@@ -262,7 +262,7 @@ class PPoG(
                             if (packet.sequence != inboundSequence.get() && lastSentAck != null) {
                                 // Genuine mid-stream gap/reorder: re-ack our last in-order packet and
                                 // drop this one (reliable-transport retransmit recovery).
-                                logger.w("data out of sequence; resending last ack")
+                                logger.w("data out of sequence: got ${packet.sequence}, expected ${inboundSequence.get()}; resending ack ${lastSentAck?.sequence}")
                                 lastSentAck?.let { sendPacketImmediately(it, params.pPoGversion) }
                             } else {
                                 if (packet.sequence != inboundSequence.get()) {
