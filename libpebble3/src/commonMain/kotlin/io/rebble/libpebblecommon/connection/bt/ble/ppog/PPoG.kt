@@ -259,10 +259,27 @@ class PPoG(
                         }
 
                         is PPoGPacket.Data -> {
-                            if (packet.sequence != inboundSequence.get()) {
+                            if (packet.sequence != inboundSequence.get() && lastSentAck != null) {
+                                // Genuine mid-stream gap/reorder: re-ack our last in-order packet and
+                                // drop this one (reliable-transport retransmit recovery).
                                 logger.w("data out of sequence; resending last ack")
                                 lastSentAck?.let { sendPacketImmediately(it, params.pPoGversion) }
                             } else {
+                                if (packet.sequence != inboundSequence.get()) {
+                                    // No inbound baseline yet this session (lastSentAck == null). After the
+                                    // reset handshake the watch should restart its data sequence at 0, but a
+                                    // watch left in a "dirty" PPoG state by an abruptly-killed previous session
+                                    // (e.g. our stale-connection restart) resumes at its old sequence — and we
+                                    // can't force it to reset (the PPoG-reset characteristic 0x0006 is absent
+                                    // on some watches). The old code then hit the branch above with
+                                    // lastSentAck == null, so "resending last ack" sent nothing: the watch got
+                                    // no feedback, retransmitted forever, and the connection dead-locked until
+                                    // the stale-watchdog restarted it (~40s churn). Adopt the first packet's
+                                    // sequence as our baseline instead — GATT notifications on one
+                                    // characteristic are ordered, so the first packet after reset is authoritative.
+                                    logger.w("first inbound data seq=${packet.sequence} (expected ${inboundSequence.get()}); resyncing baseline")
+                                    inboundSequence.set(packet.sequence)
+                                }
                                 pebbleProtocolStreams.inboundPPBytes.writeByteArray(packet.data)
                                 pebbleProtocolStreams.inboundPPBytes.flush()
                                 inboundSequence.increment()
@@ -335,6 +352,10 @@ private class Sequence {
     }
 
     fun get(): Int = sequence
+
+    fun set(value: Int) {
+        sequence = value % MAX_SEQUENCE
+    }
 
     fun increment() {
         sequence = (sequence + 1) % MAX_SEQUENCE

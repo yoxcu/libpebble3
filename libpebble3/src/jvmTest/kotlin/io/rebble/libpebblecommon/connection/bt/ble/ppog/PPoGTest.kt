@@ -183,6 +183,26 @@ class PPoGTest {
     }
 
     @Test
+    fun inboundFirstPacketNonZeroResyncsBaseline() = runTest {
+        // A watch left in a "dirty" PPoG state by an abruptly-killed previous session resumes its
+        // data stream at a non-zero sequence after the reset handshake. The first packet has no
+        // baseline yet (lastSentAck == null), so we adopt its sequence instead of dead-locking.
+        val scope = ConnectionCoroutineScope(backgroundScope.coroutineContext)
+        ppog = PPoG(ppStreams, ppogStreams, sender, bleConfigFlow, blePlatformConfig, scope)
+        ppog.run(false)
+        init()
+        val inbound5 = ppogDataPacket(5)
+        receivePacket(inbound5)
+        val inbound6 = ppogDataPacket(6)
+        receivePacket(inbound6)
+        // first packet adopted as baseline (seq 5), then the next in-order packet (seq 6) accepted
+        assertOutboundPPoGPacket(PPoGPacket.Ack(sequence = 5))
+        assertOutboundPPoGPacket(PPoGPacket.Ack(sequence = 6))
+        assertInboundPPBytes(inbound5.data)
+        assertInboundPPBytes(inbound6.data)
+    }
+
+    @Test
     fun windowSize() = runTest {
         val scope = ConnectionCoroutineScope(backgroundScope.coroutineContext)
         ppog = PPoG(ppStreams, ppogStreams, sender, bleConfigFlow, blePlatformConfig, scope)
