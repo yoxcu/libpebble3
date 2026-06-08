@@ -85,7 +85,7 @@ actual class GattServer {
             gattMgr.RegisterApplication(DBusPath(APP_PATH), emptyMap())
             log.i { "BlueZ GATT application registered" }
         } catch (e: Exception) {
-            log.e(e) { "RegisterApplication failed: $e" }
+            log.d { "RegisterApplication failed (Bluetooth not ready): $e" }
         }
     }
 

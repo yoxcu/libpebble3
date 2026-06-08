@@ -87,7 +87,7 @@ class RealScanning(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Logger.e(e) { "Ble scan failed" }
+                Logger.d { "Ble scan failed: $e" }
                 errorTracker.reportError(UserFacingError.FailedToScan("Failed to scan for watches"))
                 stopBleScan()
             }
