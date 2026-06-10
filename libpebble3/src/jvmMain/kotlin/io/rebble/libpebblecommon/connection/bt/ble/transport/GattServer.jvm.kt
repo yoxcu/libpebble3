@@ -60,8 +60,35 @@ actual fun openGattServer(
     null
 }
 
+private fun findGattAdapterPath(): String? = try {
+    val c = DBusConnectionBuilder.forSystemBus().withShared(false).build()
+    try {
+        val objMgr = c.getRemoteObject("org.bluez", "/", ObjectManager::class.java)
+        @Suppress("UNCHECKED_CAST")
+        (objMgr.GetManagedObjects() as Map<DBusPath, Map<String, *>>)
+            .entries
+            .firstOrNull { (path, ifaces) ->
+                Regex("/org/bluez/hci\\d+$").matches(path.toString()) &&
+                    "org.bluez.GattManager1" in ifaces
+            }
+            ?.key?.toString()
+    } finally {
+        c.disconnect()
+    }
+} catch (_: Exception) { null }
+
 actual class GattServer {
-    private val conn = DBusConnectionBuilder.forSystemBus().withShared(false).build()
+    // Pin inbound method-call dispatch to a SINGLE thread. The watch's PPoG packets arrive as
+    // GattCharacteristic1.WriteValue calls; dbus-java's default multi-threaded dispatch delivers them
+    // concurrently and out of order, so the ordered PPoG byte stream gets scrambled ("data out of
+    // sequence"). One method-call thread = FIFO wire order. (The only blocking handler, the META
+    // ReadValue, is unblocked from a coroutine thread and runs once before any WriteValue traffic.)
+    private val conn = DBusConnectionBuilder.forSystemBus()
+        .withShared(false)
+        .receivingThreadConfig()
+        .withMethodCallThreadCount(1)
+        .connectionConfig()
+        .build()
     private val registeredDevices = ConcurrentHashMap<String, SendChannel<ByteArray>>()
     private val _readRequests = MutableSharedFlow<ServerCharacteristicReadRequest>(extraBufferCapacity = 4)
     // True while at least one remote has called StartNotify on the PPoG characteristic.
@@ -80,18 +107,20 @@ actual class GattServer {
     }
 
     actual suspend fun addServices() {
+        val adapterPath = findGattAdapterPath() ?: "/org/bluez/hci0"
         try {
-            val gattMgr = conn.getRemoteObject("org.bluez", "/org/bluez/hci0", BluezGattManager1::class.java)
+            val gattMgr = conn.getRemoteObject("org.bluez", adapterPath, BluezGattManager1::class.java)
             gattMgr.RegisterApplication(DBusPath(APP_PATH), emptyMap())
-            log.i { "BlueZ GATT application registered" }
+            log.i { "BlueZ GATT application registered on $adapterPath" }
         } catch (e: Exception) {
-            log.d { "RegisterApplication failed (Bluetooth not ready): $e" }
+            log.w { "RegisterApplication failed on $adapterPath (Bluetooth not ready?): $e" }
         }
     }
 
     actual suspend fun closeServer() {
+        val adapterPath = findGattAdapterPath() ?: "/org/bluez/hci0"
         try {
-            val gattMgr = conn.getRemoteObject("org.bluez", "/org/bluez/hci0", BluezGattManager1::class.java)
+            val gattMgr = conn.getRemoteObject("org.bluez", adapterPath, BluezGattManager1::class.java)
             gattMgr.UnregisterApplication(DBusPath(APP_PATH))
         } catch (e: Exception) {
             log.w(e) { "UnregisterApplication failed: $e" }

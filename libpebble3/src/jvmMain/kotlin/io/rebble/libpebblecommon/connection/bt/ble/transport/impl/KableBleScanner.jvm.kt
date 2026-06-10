@@ -10,7 +10,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 
-actual fun kableBleScanner(): BleScanner = JvmKableBleScanner()
+// JVM/Linux uses a pure-BlueZ D-Bus scanner (see BluezBleScanner) instead of kable/btleplug, which
+// requires a glibc-only native lib. JvmKableBleScanner below is retained but unused.
+actual fun kableBleScanner(): BleScanner = BluezBleScanner()
 
 internal actual fun createKableAdvertisementsFlow(): Flow<Advertisement> =
     Scanner { }.advertisements
