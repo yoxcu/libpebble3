@@ -67,7 +67,7 @@ import io.rebble.libpebblecommon.connection.bt.ble.ppog.PPoGStream
 import io.rebble.libpebblecommon.connection.bt.ble.transport.GattConnector
 import io.rebble.libpebblecommon.connection.bt.ble.transport.GattServerManager
 import io.rebble.libpebblecommon.connection.bt.ble.transport.bleScanner
-import io.rebble.libpebblecommon.connection.bt.ble.transport.impl.KableGattConnector
+import io.rebble.libpebblecommon.connection.bt.ble.transport.impl.platformGattConnector
 import io.rebble.libpebblecommon.connection.bt.classic.pebble.PebbleBtClassic
 import io.rebble.libpebblecommon.connection.qemu.QemuTransport
 import io.rebble.libpebblecommon.connection.devconnection.CloudpebbleProxyProtocolVersion
@@ -497,14 +497,20 @@ fun initKoin(
                     scoped { get<ConnectionScopeProperties>().platformIdentifier as PlatformIdentifier.BlePlatformIdentifier }
 
                     // Connection
-                    scopedOf(::KableGattConnector)
                     scopedOf(::PebbleBle)
                     scopedOf(::PebbleBtClassic)
                     scopedOf(::QemuTransport)
                     scopedOf(::RealConnectionAnalyticsLogger) bind ConnectionAnalyticsLogger::class
                     scoped<GattConnector> {
                         when (val id = get<PebbleIdentifier>()) {
-                            is PebbleBleIdentifier -> get<KableGattConnector>()
+                            // platformGattConnector: BlueZ on JVM, kable on Android/iOS. The kable
+                            // peripheral lives in the BlePlatformIdentifier (null on JVM/BlueZ).
+                            is PebbleBleIdentifier -> platformGattConnector(
+                                identifier = id,
+                                blePlatformIdentifier = get(),
+                                scope = get(),
+                                blePlatformConfig = get(),
+                            )
                             is PebbleBtClassicIdentifier -> error("BT Classic does not use GATT: $id")
                             else -> error("GATT not implemented for: $id")
                         }

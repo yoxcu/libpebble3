@@ -5,6 +5,10 @@ import co.touchlab.kermit.Logger
 import com.juul.kable.AndroidPeripheral
 import com.juul.kable.Peripheral
 import io.rebble.libpebblecommon.connection.PebbleBleIdentifier
+import io.rebble.libpebblecommon.connection.PlatformIdentifier
+import io.rebble.libpebblecommon.connection.bt.ble.BlePlatformConfig
+import io.rebble.libpebblecommon.connection.bt.ble.transport.GattConnector
+import io.rebble.libpebblecommon.di.ConnectionCoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -18,6 +22,22 @@ actual fun peripheralFromIdentifier(
 ): Peripheral? = Peripheral(identifier.macAddress) {
     autoConnectIf { autoConnect }
 }
+
+actual fun createBlePlatformIdentifier(
+    identifier: PebbleBleIdentifier,
+    name: String,
+    autoConnect: Boolean,
+): PlatformIdentifier.BlePlatformIdentifier? =
+    peripheralFromIdentifier(identifier, name, autoConnect)?.let {
+        PlatformIdentifier.BlePlatformIdentifier(it, autoConnect)
+    }
+
+actual fun platformGattConnector(
+    identifier: PebbleBleIdentifier,
+    blePlatformIdentifier: PlatformIdentifier.BlePlatformIdentifier,
+    scope: ConnectionCoroutineScope,
+    blePlatformConfig: BlePlatformConfig,
+): GattConnector = KableGattConnector(identifier, blePlatformIdentifier, scope, blePlatformConfig)
 
 actual suspend fun Peripheral.requestMtuNative(mtu: Int): Int {
     if (this is AndroidPeripheral) {

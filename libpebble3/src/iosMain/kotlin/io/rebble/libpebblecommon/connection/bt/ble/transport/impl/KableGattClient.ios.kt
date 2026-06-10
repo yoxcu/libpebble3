@@ -3,6 +3,10 @@ package io.rebble.libpebblecommon.connection.bt.ble.transport.impl
 import co.touchlab.kermit.Logger
 import com.juul.kable.Peripheral
 import io.rebble.libpebblecommon.connection.PebbleBleIdentifier
+import io.rebble.libpebblecommon.connection.PlatformIdentifier
+import io.rebble.libpebblecommon.connection.bt.ble.BlePlatformConfig
+import io.rebble.libpebblecommon.connection.bt.ble.transport.GattConnector
+import io.rebble.libpebblecommon.di.ConnectionCoroutineScope
 import io.rebble.libpebblecommon.connection.bt.ble.pebble.LEConstants.UUIDs.PAIRING_SERVICE_UUID
 import io.rebble.libpebblecommon.connection.bt.ble.transport.asCbUuid
 import io.rebble.libpebblecommon.connection.bt.ble.transport.asUuid
@@ -64,3 +68,19 @@ actual suspend fun Peripheral.requestMtuNative(mtu: Int): Int {
 // lets the caller skip its refresh-then-rediscover step and fall through to
 // the normal discovery path.
 actual suspend fun Peripheral.refreshServicesNative(): Boolean = false
+
+actual fun createBlePlatformIdentifier(
+    identifier: PebbleBleIdentifier,
+    name: String,
+    autoConnect: Boolean,
+): PlatformIdentifier.BlePlatformIdentifier? =
+    peripheralFromIdentifier(identifier, name, autoConnect)?.let {
+        PlatformIdentifier.BlePlatformIdentifier(it, autoConnect)
+    }
+
+actual fun platformGattConnector(
+    identifier: PebbleBleIdentifier,
+    blePlatformIdentifier: PlatformIdentifier.BlePlatformIdentifier,
+    scope: ConnectionCoroutineScope,
+    blePlatformConfig: BlePlatformConfig,
+): GattConnector = KableGattConnector(identifier, blePlatformIdentifier, scope, blePlatformConfig)
