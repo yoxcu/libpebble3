@@ -45,6 +45,26 @@ fun kableGattConnector(
 
 expect fun peripheralFromIdentifier(identifier: PebbleBleIdentifier, name: String): Peripheral?
 
+/**
+ * Builds the BLE platform identifier. JVM/Linux returns one with a null kable peripheral (the BlueZ
+ * connector needs none, and btleplug's native lib can't load on musl); Android/iOS wrap the kable
+ * peripheral and return null when it can't be resolved (so the connection is not attempted).
+ */
+expect fun createBlePlatformIdentifier(
+    identifier: PebbleBleIdentifier,
+    name: String,
+): io.rebble.libpebblecommon.connection.PlatformIdentifier?
+
+/**
+ * Builds the platform GATT connector. JVM/Linux returns a pure-BlueZ connector (the peripheral in
+ * [blePlatformIdentifier] is null there); Android/iOS return the kable-backed [KableGattConnector].
+ */
+expect fun platformGattConnector(
+    identifier: PebbleBleIdentifier,
+    blePlatformIdentifier: io.rebble.libpebblecommon.connection.PlatformIdentifier.BlePlatformIdentifier,
+    scope: ConnectionCoroutineScope,
+): GattConnector
+
 class KableGattConnector(
     private val identifier: PebbleBleIdentifier,
     private val peripheral: Peripheral,

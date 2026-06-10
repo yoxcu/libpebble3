@@ -42,7 +42,9 @@ actual fun isBonded(identifier: PebbleBleIdentifier): Boolean {
             conn.disconnect()
         }
     } catch (e: Exception) {
-        log.w(e) { "isBonded check failed for $identifier" }
+        // UnknownObject is expected when BlueZ has dropped a transient (discovered-but-not-yet-bonded)
+        // device; treat as not-bonded without the noisy stacktrace.
+        log.d { "isBonded check failed for $identifier: ${e.message}" }
         false
     }
 }
