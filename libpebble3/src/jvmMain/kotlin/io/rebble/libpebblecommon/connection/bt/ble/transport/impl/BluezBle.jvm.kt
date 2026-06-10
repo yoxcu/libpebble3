@@ -284,6 +284,15 @@ class BluezGattConnector(
                 logger.i { "Connect() returned" }
             } catch (e: Exception) {
                 logger.w { "Connect() threw: ${e.message}" }
+                // Phantom/stale bond: BlueZ has the device in its bond DB (from /var/lib/bluetooth)
+                // but the object can't be connected — Connect() resolves to UnknownMethod
+                // ("...doesn't exist"). Classify this as FailedToConnect (watch present-but-unusable)
+                // rather than letting it fall through to ConnectTimeout, so the stale-bond reaper
+                // treats it like any other stale bond instead of mistaking it for an out-of-range
+                // watch. The reaper owns bond removal; we only classify here.
+                if (e.message?.contains("doesn't exist") == true && !_disconnected.isCompleted) {
+                    _disconnected.complete(ConnectionFailureReason.FailedToConnect)
+                }
                 if (!resolved.isCompleted) resolved.complete(readBool(props, "ServicesResolved"))
             }
         }
