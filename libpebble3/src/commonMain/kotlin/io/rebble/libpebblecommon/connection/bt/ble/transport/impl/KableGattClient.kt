@@ -43,6 +43,30 @@ expect fun peripheralFromIdentifier(
     autoConnect: Boolean,
 ): Peripheral?
 
+/**
+ * Builds the BLE platform identifier. JVM/Linux never returns null: it returns one with a null kable
+ * peripheral (the BlueZ connector needs none, and btleplug's native lib can't load on musl) and
+ * passes [autoConnect] through unused (BlueZ manages reconnection itself); Android/iOS wrap the
+ * kable peripheral (built with [autoConnect]) and return null when it can't be resolved (so the
+ * connection is not attempted).
+ */
+expect fun createBlePlatformIdentifier(
+    identifier: PebbleBleIdentifier,
+    name: String,
+    autoConnect: Boolean,
+): PlatformIdentifier.BlePlatformIdentifier?
+
+/**
+ * Builds the platform GATT connector. JVM/Linux returns a pure-BlueZ connector (the peripheral in
+ * [blePlatformIdentifier] is null there); Android/iOS return the kable-backed [KableGattConnector].
+ */
+expect fun platformGattConnector(
+    identifier: PebbleBleIdentifier,
+    blePlatformIdentifier: PlatformIdentifier.BlePlatformIdentifier,
+    scope: ConnectionCoroutineScope,
+    blePlatformConfig: BlePlatformConfig,
+): GattConnector
+
 class KableGattConnector(
     private val identifier: PebbleBleIdentifier,
     platformIdentifier: PlatformIdentifier.BlePlatformIdentifier,
@@ -50,7 +74,11 @@ class KableGattConnector(
     private val blePlatformConfig: BlePlatformConfig,
 ) : GattConnector {
     private val logger = Logger.withTag("KableGattConnector/${identifier.asString}")
-    private val peripheral = platformIdentifier.peripheral
+    // Only the JVM/BlueZ identifier carries no peripheral, and that target builds a
+    // BluezGattConnector instead (see platformGattConnector).
+    private val peripheral = requireNotNull(platformIdentifier.peripheral) {
+        "KableGattConnector needs a kable peripheral"
+    }
     private val autoConnect = platformIdentifier.autoConnect
 
     private val _disconnected = CompletableDeferred<ConnectionFailureReason>()

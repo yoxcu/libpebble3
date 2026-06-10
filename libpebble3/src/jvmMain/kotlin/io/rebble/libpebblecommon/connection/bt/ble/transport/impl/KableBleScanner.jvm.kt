@@ -12,7 +12,11 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 
-actual fun kableBleScanner(bleConfigFlow: BleConfigFlow): BleScanner = JvmKableBleScanner(bleConfigFlow)
+// JVM/Linux uses a pure-BlueZ D-Bus scanner (see BluezBleScanner) instead of kable/btleplug, which
+// requires a glibc-only native lib. It filters on the Pebble manufacturer IDs itself, so
+// bleConfigFlow (filterScanResultsByUuid) isn't consulted. JvmKableBleScanner below is retained
+// but unused.
+actual fun kableBleScanner(bleConfigFlow: BleConfigFlow): BleScanner = BluezBleScanner()
 
 internal actual fun createKableAdvertisementsFlow(bleConfig: BleConfig): Flow<Advertisement> =
     Scanner { }.advertisements
