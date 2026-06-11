@@ -152,7 +152,7 @@ class GattServerManager(
             // CBPeripheralManager construction on iOS.
             libPebbleCoroutineScope.launch {
                 gattServer?.characteristicReadRequest?.collect {
-                    logger.i("sending meta response (watch reading META characteristic)")
+                    logger.d("sending meta response (watch reading META characteristic)")
                     it.respond(SERVER_META_RESPONSE)
                 }
             }

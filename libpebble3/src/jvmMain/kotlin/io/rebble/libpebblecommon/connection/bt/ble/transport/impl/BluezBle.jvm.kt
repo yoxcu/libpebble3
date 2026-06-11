@@ -460,7 +460,7 @@ private class BluezConnectedGattClient(
                 charsByService.forEach { (svc, chars) -> out.add(GattService(svc, chars)) }
                 charPaths = newCharPaths
                 _services = out
-                logger.i { "discovered ${out.size} services, ${newCharPaths.size} characteristics" }
+                logger.d { "discovered ${out.size} services, ${newCharPaths.size} characteristics" }
             } catch (e: Exception) {
                 logger.e("service discovery failed", e)
             }

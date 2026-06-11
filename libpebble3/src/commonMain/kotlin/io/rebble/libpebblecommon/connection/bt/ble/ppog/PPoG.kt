@@ -39,7 +39,7 @@ class PPoG(
     private var closed = false
 
     fun run(reversed: Boolean = false) {
-        logger.i("run(): ${if (reversed) "sending" else "waiting for"} PPoG RESET_REQUEST")
+        logger.d("run(): ${if (reversed) "sending" else "waiting for"} PPoG RESET_REQUEST")
         scope.launch {
             val params = if (reversed) {
                 // Reversed PPoG: the watch is server-side and, once the phone
@@ -159,10 +159,10 @@ class PPoG(
 
     // Negotiate connection
     private suspend fun initWaitingForResetRequest(): PPoGConnectionParams {
-        logger.i("initWaitingForResetRequest: waiting for RESET_REQUEST")
+        logger.d("initWaitingForResetRequest: waiting for RESET_REQUEST")
 
         val resetRequest = waitForPacket<PPoGPacket.ResetRequest>()
-        logger.i("got $resetRequest")
+        logger.d("got $resetRequest")
         return respondToResetRequest(resetRequest)
     }
 
@@ -175,7 +175,7 @@ class PPoG(
             val packet = pPoGStream.inboundPPoGBytesChannel.receive().asPPoGPacket()
             when (packet) {
                 is PPoGPacket.ResetComplete -> {
-                    logger.i("got $packet")
+                    logger.d("got $packet")
                     return connectionParams(packet, resetRequest.ppogVersion)
                 }
 
@@ -316,14 +316,15 @@ class PPoG(
                                     // No inbound baseline yet this session (lastSentAck == null). After the
                                     // reset handshake the watch should restart its data sequence at 0, but a
                                     // watch left in a "dirty" PPoG state by an abruptly-killed previous session
-                                    // (e.g. our stale-connection restart) resumes at its old sequence — and we
-                                    // can't force it to reset (the PPoG-reset characteristic 0x0006 is absent
-                                    // on some watches). The old code then hit the branch above with
-                                    // lastSentAck == null, so "resending last ack" sent nothing: the watch got
-                                    // no feedback, retransmitted forever, and the connection dead-locked until
-                                    // the stale-watchdog restarted it (~40s churn). Adopt the first packet's
-                                    // sequence as our baseline instead — GATT notifications on one
-                                    // characteristic are ordered, so the first packet after reset is authoritative.
+                                    // (e.g. a daemon restart) resumes at its old sequence — and we can't force
+                                    // it to reset (PebbleOS doesn't expose the PPoG-reset characteristic 0x0006,
+                                    // and nothing writes it since upstream dropped PPoGReset). The old code then
+                                    // hit the branch above with lastSentAck == null, so "resending last ack" sent
+                                    // nothing: the watch got no feedback, retransmitted forever, and the
+                                    // connection dead-locked until a watchdog tore it down (~40s churn). Adopt
+                                    // the first packet's sequence as our baseline instead — GATT notifications on
+                                    // one characteristic are ordered, so the first packet after reset is
+                                    // authoritative.
                                     logger.w("first inbound data seq=${packet.sequence} (expected ${inboundSequence.get()}); resyncing baseline")
                                     inboundSequence.set(packet.sequence)
                                 }
