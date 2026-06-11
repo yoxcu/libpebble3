@@ -65,8 +65,8 @@ class PebbleBle(
         logger.d("services = $services")
 
         if (!connectionParams.subscribeAndConfigure(device)) {
-            // this can happen on some older firmwares (PRF?)
-            logger.i("error setting up connection params")
+            // this can happen on some older firmwares (PRF?) and is harmless — not an error worth INFO
+            logger.d("connection params not set up (harmless on some firmwares)")
         }
         logger.d("done connectionParams")
 

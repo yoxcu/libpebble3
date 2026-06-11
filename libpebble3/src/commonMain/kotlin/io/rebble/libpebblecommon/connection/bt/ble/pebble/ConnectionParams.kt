@@ -13,7 +13,7 @@ class ConnectionParams(private val scope: ConnectionCoroutineScope) {
         // TODO scope this
         val sub = gattClient.subscribeToCharacteristic(PAIRING_SERVICE_UUID, CONNECTION_PARAMETERS_CHARACTERISTIC)
         if (sub == null) {
-            Logger.e("error subscribing to connection params")
+            Logger.d("connection params characteristic not available (harmless on some firmwares)")
             return false
         }
         scope.launch {

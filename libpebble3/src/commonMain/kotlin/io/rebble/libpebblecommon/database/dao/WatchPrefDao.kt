@@ -26,7 +26,7 @@ interface WatchPrefRealDao : WatchPrefItemDao {
     override suspend fun handleWrite(write: DbWrite, transport: String, params: ValueParams): BlobResponse.BlobStatus {
         val writeItem = write.asWatchPrefItem(params)
         if (writeItem == null) {
-            logger.w { "Couldn't decode watch pref item from blobdb write: $write" }
+            logger.d { "Couldn't decode watch pref item from blobdb write: $write" }
             return BlobResponse.BlobStatus.Success
         }
         logger.v { "blobdb handleWrite: $writeItem" }
