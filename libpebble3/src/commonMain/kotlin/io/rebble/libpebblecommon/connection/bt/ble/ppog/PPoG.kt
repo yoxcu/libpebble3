@@ -39,7 +39,7 @@ class PPoG(
     private var closed = false
 
     fun run(requestedPpogResetViaCharacteristic: Boolean) {
-        logger.i("run(): waiting for PPoG RESET_REQUEST")
+        logger.d("run(): waiting for PPoG RESET_REQUEST")
         scope.launch {
             val params = withTimeoutOrNull(30.seconds) {
                 initWaitingForResetRequest()
@@ -125,10 +125,10 @@ class PPoG(
 
     // Negotiate connection
     private suspend fun initWaitingForResetRequest(): PPoGConnectionParams {
-        logger.i("initWaitingForResetRequest: waiting for RESET_REQUEST")
+        logger.d("initWaitingForResetRequest: waiting for RESET_REQUEST")
 
         val resetRequest = waitForPacket<PPoGPacket.ResetRequest>()
-        logger.i("got $resetRequest")
+        logger.d("got $resetRequest")
 
         val resetCompletePacket = PPoGPacket.ResetComplete(
             sequence = 0,
@@ -153,7 +153,7 @@ class PPoG(
             }
             logger.w { "unexpected packet $packet while waiting for ResetComplete — ignoring" }
         }
-        logger.i("got $resetComplete")
+        logger.d("got $resetComplete")
 
         return PPoGConnectionParams(
             rxWindow = min(min(resetComplete.txWindow, blePlatformConfig.desiredTxWindow), MAX_SUPPORTED_WINDOW_SIZE),

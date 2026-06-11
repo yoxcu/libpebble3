@@ -662,7 +662,7 @@ fun DbWrite.asWatchPrefItem(params: ValueParams): WatchPrefItem? {
         val id = key.asByteArray().decodeToString().trimEnd('\u0000')
         val type = WatchPref.from(id)
         if (type == null) {
-            logger.w("Unknown watch pref type from blobdb: $id")
+            logger.d("Unknown watch pref type from blobdb: $id")
             return null
         }
         val strValue = try {

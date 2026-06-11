@@ -129,16 +129,16 @@ actual class GattServer {
     }
 
     actual fun registerDevice(identifier: PebbleBleIdentifier, sendChannel: SendChannel<ByteArray>) {
-        log.i { "registerDevice: ${identifier.asString}" }
+        log.d { "registerDevice: ${identifier.asString}" }
         registeredDevices[identifier.asString] = sendChannel
     }
 
     actual fun unregisterDevice(identifier: PebbleBleIdentifier) {
-        log.i { "unregisterDevice: ${identifier.asString}" }
+        log.d { "unregisterDevice: ${identifier.asString}" }
         registeredDevices.remove(identifier.asString)
         if (registeredDevices.isEmpty()) {
             _notifySubscribed.value = false
-            log.i { "unregisterDevice: cleared notifySubscribed (no more devices)" }
+            log.d { "unregisterDevice: cleared notifySubscribed (no more devices)" }
         }
     }
 
