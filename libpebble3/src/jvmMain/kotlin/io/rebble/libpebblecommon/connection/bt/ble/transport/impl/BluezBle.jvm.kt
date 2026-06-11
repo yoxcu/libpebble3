@@ -32,6 +32,7 @@ import org.freedesktop.dbus.interfaces.Properties
 import org.freedesktop.dbus.matchrules.DBusMatchRuleBuilder
 import org.freedesktop.dbus.messages.DBusSignal
 import org.freedesktop.dbus.types.Variant
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
 
@@ -254,6 +255,10 @@ class BluezGattConnector(
         val props = c.getRemoteObject(ORG_BLUEZ, path, Properties::class.java)
 
         val resolved = CompletableDeferred<Boolean>()
+        // Once the link has come up, a later Connected=false is a real disconnect we must surface.
+        // While still arming, Connected=false is just a failed background attempt and is ignored —
+        // BlueZ keeps the accept-list intent and ServicesResolved fires when the watch returns.
+        val linkUp = AtomicBoolean(false)
         val rule = DBusMatchRuleBuilder.create()
             .withType("signal").withInterface(DBUS_PROPERTIES)
             .withMember("PropertiesChanged").withPath(path).build()
@@ -262,12 +267,13 @@ class BluezGattConnector(
                 val params = msg.getParameters() ?: return@addGenericSigHandler
                 if (params.size < 2 || params[0] != DEVICE1) return@addGenericSigHandler
                 val changed = params[1] as? Map<*, *> ?: return@addGenericSigHandler
-                (unwrap(changed["ServicesResolved"]) as? Boolean)?.let { if (it) resolved.complete(true) }
+                (unwrap(changed["ServicesResolved"]) as? Boolean)?.let {
+                    if (it) { linkUp.set(true); resolved.complete(true) }
+                }
                 (unwrap(changed["Connected"]) as? Boolean)?.let {
-                    if (!it) {
-                        logger.i { "device reported Connected=false" }
+                    if (!it && linkUp.get()) {
+                        logger.i { "device reported Connected=false (link dropped)" }
                         if (!_disconnected.isCompleted) _disconnected.complete(ConnectionFailureReason.FailedToConnect)
-                        if (!resolved.isCompleted) resolved.complete(false)
                     }
                 }
             } catch (e: Exception) {
@@ -275,45 +281,65 @@ class BluezGattConnector(
             }
         }
 
-        attempted = true
-        // Device1.Connect() blocks in BlueZ until the connection resolves or fails; run it off the
-        // D-Bus reply thread and drive completion off the property watcher with our own timeout.
-        scope.launch(Dispatchers.IO) {
-            try {
-                device.Connect()
-                logger.i { "Connect() returned" }
-            } catch (e: Exception) {
-                logger.w { "Connect() threw: ${e.message}" }
-                // Phantom/stale bond: BlueZ has the device in its bond DB (from /var/lib/bluetooth)
-                // but the object can't be connected — Connect() resolves to UnknownMethod
-                // ("...doesn't exist"). Classify this as FailedToConnect (watch present-but-unusable)
-                // rather than letting it fall through to ConnectTimeout, so the stale-bond reaper
-                // treats it like any other stale bond instead of mistaking it for an out-of-range
-                // watch. The reaper owns bond removal; we only classify here.
-                if (e.message?.contains("doesn't exist") == true && !_disconnected.isCompleted) {
-                    _disconnected.complete(ConnectionFailureReason.FailedToConnect)
-                }
-                if (!resolved.isCompleted) resolved.complete(readBool(props, "ServicesResolved"))
-            }
+        // Trust the bonded device so bluetoothd keeps it in the kernel background-connect (accept-list)
+        // set and reconnects it the instant it advertises — no app-side polling. Harmless if unbonded.
+        try { props.Set(DEVICE1, "Trusted", Variant(true, "b")) } catch (e: Exception) {
+            logger.d { "could not set Trusted: ${e.message}" }
         }
 
-        // Possible the device is already connected+resolved (reconnect path).
+        attempted = true
         if (readBool(props, "ServicesResolved")) resolved.complete(true)
 
-        val ok = withTimeoutOrNull(CONNECT_TIMEOUT) { resolved.await() } ?: false
-        if (!ok) {
-            logger.w { "connect timed out / failed" }
-            try { device.Disconnect() } catch (_: Exception) {}
-            // Release the D-Bus connection + signal handler — otherwise every failed attempt (e.g. an
-            // out-of-range watch retrying) leaks a connection.
-            close()
-            val reason = if (_disconnected.isCompleted) ConnectionFailureReason.FailedToConnect
-            else ConnectionFailureReason.ConnectTimeout
-            if (!_disconnected.isCompleted) _disconnected.complete(reason)
-            return GattConnectionResult.Failure(reason)
+        // Standing connection intent. Keep a Device1.Connect() pending and re-issue it slowly; NEVER
+        // call Disconnect() on failure — that cancels BlueZ's kernel connect intent and is what turned
+        // reconnection into a losing race against the watch's advertising window. For a bonded watch
+        // this suspends at near-zero cost until the watch advertises and BlueZ links up. A genuinely
+        // stale bond surfaces as Connect() throwing "doesn't exist" → terminal FailedToConnect, which
+        // the stale-bond reaper then clears. Cancellation (BT off / requestDisconnection / forget)
+        // unwinds via the scope and is cleaned up in the finally.
+        var succeeded = false
+        try {
+            while (scope.isActive) {
+                val attempt = scope.launch(Dispatchers.IO) {
+                    try {
+                        device.Connect()
+                        logger.d { "Connect() returned" }
+                    } catch (e: Exception) {
+                        val m = e.message ?: ""
+                        if (m.contains("doesn't exist")) {
+                            if (!_disconnected.isCompleted) _disconnected.complete(ConnectionFailureReason.FailedToConnect)
+                            if (!resolved.isCompleted) resolved.complete(false)
+                        } else {
+                            // "No reply within specified time" (client gave up while BlueZ keeps
+                            // trying), "In Progress", "Already Connected", out-of-range — all tolerable;
+                            // do NOT Disconnect, or we'd cancel the kernel connect intent.
+                            logger.d { "Connect() pending/failed, tolerating: $m" }
+                        }
+                    }
+                }
+                val outcome = withTimeoutOrNull(REARM_INTERVAL) { resolved.await() }
+                attempt.cancel()
+                when (outcome) {
+                    true -> {
+                        logger.i { "connected and services resolved" }
+                        succeeded = true
+                        return GattConnectionResult.Success(BluezConnectedGattClient(identifier, c, path))
+                    }
+                    false -> {
+                        val reason = if (_disconnected.isCompleted) ConnectionFailureReason.FailedToConnect
+                        else ConnectionFailureReason.ConnectTimeout
+                        if (!_disconnected.isCompleted) _disconnected.complete(reason)
+                        return GattConnectionResult.Failure(reason)
+                    }
+                    null -> logger.d { "re-arm: no link within ${REARM_INTERVAL}, re-issuing Connect()" }
+                }
+            }
+            // Scope cancelled (Bluetooth off / requestDisconnection / forget).
+            if (!_disconnected.isCompleted) _disconnected.complete(ConnectionFailureReason.FailedToConnect)
+            return GattConnectionResult.Failure(ConnectionFailureReason.FailedToConnect)
+        } finally {
+            if (!succeeded) close()
         }
-        logger.i { "connected and services resolved" }
-        return GattConnectionResult.Success(BluezConnectedGattClient(identifier, c, path))
     }
 
     override suspend fun disconnect() {
@@ -339,7 +365,11 @@ class BluezGattConnector(
     } catch (_: Exception) { false }
 
     companion object {
-        private val CONNECT_TIMEOUT = 60.seconds
+        // How often to re-issue Device1.Connect() while arming. Long, because a single Connect()
+        // already leaves a standing kernel intent (BlueZ keeps trying after the D-Bus call's client
+        // reply times out); this is only insurance in case BlueZ drops it. Must exceed the ~20s D-Bus
+        // reply timeout so attempts don't pile up.
+        private val REARM_INTERVAL = 60.seconds
     }
 }
 
