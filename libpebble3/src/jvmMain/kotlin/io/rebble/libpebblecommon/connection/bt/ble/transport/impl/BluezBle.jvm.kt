@@ -291,6 +291,17 @@ class BluezGattConnector(
         attempted = true
         if (readBool(props, "ServicesResolved")) resolved.complete(true)
 
+        // Tear down the property watcher once this connection ends. On a successful connect the watcher
+        // is left installed (it's how we surface the eventual disconnect), but nothing closed it — so on
+        // a one-sided/stale bond, where BlueZ's Trusted auto-connect keeps re-establishing a dead link,
+        // a handler leaks per cycle and they all fire (the duplicated "link dropped" logs). Closing it
+        // when _disconnected completes stops the leak. (On the failure/cancel paths close() in the
+        // finally already handles it; double-close is harmless.)
+        scope.launch {
+            _disconnected.await()
+            try { lifecycleHandle?.close() } catch (_: Exception) {}
+        }
+
         // Standing connection intent. Keep a Device1.Connect() pending and re-issue it slowly; NEVER
         // call Disconnect() on failure — that cancels BlueZ's kernel connect intent and is what turned
         // reconnection into a losing race against the watch's advertising window. For a bonded watch
