@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
 import org.freedesktop.dbus.annotations.DBusInterfaceName
 import org.freedesktop.dbus.connections.impl.DBusConnection
@@ -317,22 +318,35 @@ class BluezGattConnector(
                         }
                     }
                 }
-                val outcome = withTimeoutOrNull(REARM_INTERVAL) { resolved.await() }
+                // Unblock as soon as the link resolves OR the Connect() attempt ends. An away watch
+                // keeps Connect() pending, so we wait on `resolved` (capped by REARM_INTERVAL as
+                // insurance). But a Connect() that returns or fails WITHOUT establishing — e.g. a 0x3e
+                // "connection failed to be established" flap from reconnecting too fast after a restart
+                // — ends `attempt`; we then re-arm after a short backoff instead of sitting idle for a
+                // whole minute with no connection attempt pending in BlueZ (which is what made a
+                // service restart take ~60s to reconnect).
+                withTimeoutOrNull(REARM_INTERVAL) {
+                    select<Unit> {
+                        resolved.onAwait { }
+                        attempt.onJoin { }
+                    }
+                }
                 attempt.cancel()
-                when (outcome) {
-                    true -> {
+                if (resolved.isCompleted) {
+                    if (resolved.await()) {
                         logger.i { "connected and services resolved" }
                         succeeded = true
                         return GattConnectionResult.Success(BluezConnectedGattClient(identifier, c, path))
                     }
-                    false -> {
-                        val reason = if (_disconnected.isCompleted) ConnectionFailureReason.FailedToConnect
-                        else ConnectionFailureReason.ConnectTimeout
-                        if (!_disconnected.isCompleted) _disconnected.complete(reason)
-                        return GattConnectionResult.Failure(reason)
-                    }
-                    null -> logger.d { "re-arm: no link within ${REARM_INTERVAL}, re-issuing Connect()" }
+                    val reason = if (_disconnected.isCompleted) ConnectionFailureReason.FailedToConnect
+                    else ConnectionFailureReason.ConnectTimeout
+                    if (!_disconnected.isCompleted) _disconnected.complete(reason)
+                    return GattConnectionResult.Failure(reason)
                 }
+                // No link yet: the attempt ended (or the cap elapsed). A brief settle keeps us from
+                // reconnecting faster than the watch can cleanly re-advertise, then we re-arm.
+                logger.d { "connect attempt ended without a link; re-arming in $RETRY_BACKOFF" }
+                delay(RETRY_BACKOFF)
             }
             // Scope cancelled (Bluetooth off / requestDisconnection / forget).
             if (!_disconnected.isCompleted) _disconnected.complete(ConnectionFailureReason.FailedToConnect)
@@ -370,6 +384,10 @@ class BluezGattConnector(
         // reply times out); this is only insurance in case BlueZ drops it. Must exceed the ~20s D-Bus
         // reply timeout so attempts don't pile up.
         private val REARM_INTERVAL = 60.seconds
+        // Settle after a Connect() that ended without establishing a link (e.g. a 0x3e flap) before
+        // re-arming — short enough to recover a restart in seconds, long enough to let the watch
+        // re-advertise cleanly rather than flapping again on an even faster reconnect.
+        private val RETRY_BACKOFF = 5.seconds
     }
 }
 
