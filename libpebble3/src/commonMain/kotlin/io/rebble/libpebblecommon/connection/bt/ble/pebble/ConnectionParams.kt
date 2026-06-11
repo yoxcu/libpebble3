@@ -13,7 +13,7 @@ class ConnectionParams(private val scope: ConnectionCoroutineScope) {
         // TODO scope this
         val sub = gattClient.subscribeToCharacteristic(PAIRING_SERVICE_UUID, CONNECTION_PARAMETERS_CHARACTERISTIC)
         if (sub == null) {
-            Logger.i("error subscribing to connection params (not present on core watches yet)")
+            Logger.d("connection params characteristic not available (not present on core watches yet; harmless)")
             return false
         }
         scope.launch {
