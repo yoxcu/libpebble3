@@ -63,7 +63,12 @@ actual val platformModule: Module = module {
     single {
         BlePlatformConfig(
             delayBleConnectionsAfterAppStart = false,
-            delayBleDisconnections = false,
+            // Brief settle in WatchManager.cleanup() before releasing the connection slot on
+            // disconnect, so we don't re-arm the connect intent while the watch is still tearing the
+            // old link down (the flag's documented purpose — "disconnect+reconnect so fast the watch
+            // doesn't realize"). Matches the Android default. Independent of the standing-intent
+            // reconnect model in BluezGattConnector; kept as a small reconnect hygiene margin.
+            delayBleDisconnections = true,
             sendPpogResetOnDisconnection = true,
             supportsBtClassic = false,
         )
