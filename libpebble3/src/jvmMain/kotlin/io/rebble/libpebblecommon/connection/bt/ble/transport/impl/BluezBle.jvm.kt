@@ -394,6 +394,18 @@ class BluezGattConnector(
         // already leaves a standing kernel intent (BlueZ keeps trying after the D-Bus call's client
         // reply times out); this is only insurance in case BlueZ drops it. Must exceed the ~20s D-Bus
         // reply timeout so attempts don't pile up.
+        //
+        // KNOWN REDUNDANT (kept as zero-cost insurance): a 2026-06-12 btmon snoop of an ~11 min
+        // airplane-mode window proved BlueZ reconnects on its OWN — one Device1.Connect() arms an
+        // accept-list passive scan that BlueZ re-runs on a steady 45s duty cycle (MGMT Connect Failed
+        // 0x0e each time the watch is absent) and completes the instant the watch advertises again
+        // (3s, in that capture). Our 60s re-arm produced ZERO extra LE Create Connection on the wire
+        // the entire window — BlueZ swallows the re-issues as "in progress". So this cap can be
+        // DROPPED with no behaviour change for the out-of-range case: just block on
+        // `select { resolved-onAwait, attempt-onJoin }` with no timeout and rely on RETRY_BACKOFF (which is
+        // the load-bearing part — it handles a Connect() that ENDS without a link, e.g. a 0x3e flap,
+        // a case the airplane snoop doesn't exercise). Left in only to guard the hypothetical where
+        // BlueZ silently drops the intent (never observed: held 11 min on the snoop, 5h40m overnight).
         private val REARM_INTERVAL = 60.seconds
         // Settle after a Connect() that ended without establishing a link (e.g. a 0x3e flap) before
         // re-arming — short enough to recover a restart in seconds, long enough to let the watch
