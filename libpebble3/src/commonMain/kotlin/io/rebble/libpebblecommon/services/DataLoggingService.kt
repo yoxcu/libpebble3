@@ -4,6 +4,7 @@ import co.touchlab.kermit.Logger
 import io.rebble.libpebblecommon.connection.PebbleProtocolHandler
 import io.rebble.libpebblecommon.datalogging.Datalogging
 import io.rebble.libpebblecommon.di.ConnectionCoroutineScope
+import io.rebble.libpebblecommon.packets.DataItemType
 import io.rebble.libpebblecommon.packets.DataLoggingIncomingPacket
 import io.rebble.libpebblecommon.packets.DataLoggingOutgoingPacket
 import kotlinx.coroutines.flow.launchIn
@@ -53,7 +54,9 @@ class DataLoggingService(
                     val itemSize = it.dataItemSize.get()
                     val timestamp = it.timestamp.get()
                     logger.d { "Session opened: $id tag: $tag (accepted: $acceptSessions)" }
-                    sessions[id] = DataLoggingSession(id, tag, applicationUuid, itemSize, timestamp)
+                    sessions[id] = DataLoggingSession(
+                        id, tag, applicationUuid, itemSize, timestamp, it.dataItemType,
+                    )
                     datalogging.openSession(id, tag, applicationUuid, itemSize)
                     sendAckNack(id)
                 }
@@ -79,6 +82,7 @@ class DataLoggingService(
                         data = it.payload.get().toByteArray(),
                         watchInfo = info,
                         itemSize = session.itemSize,
+                        itemType = session.itemType,
                         itemsLeft = it.itemsLeftAfterThis.get(),
                     )
                 }
@@ -116,4 +120,5 @@ data class DataLoggingSession(
     val uuid: Uuid,
     val itemSize: UShort,
     val timestamp: UInt,
+    val itemType: DataItemType,
 )
