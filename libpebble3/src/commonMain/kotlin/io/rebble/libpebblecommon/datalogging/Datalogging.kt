@@ -3,6 +3,7 @@ package io.rebble.libpebblecommon.datalogging
 import co.touchlab.kermit.Logger
 import io.rebble.libpebblecommon.SystemAppIDs.SYSTEM_APP_UUID
 import io.rebble.libpebblecommon.connection.WebServices
+import io.rebble.libpebblecommon.packets.DataItemType
 import io.rebble.libpebblecommon.services.WatchInfo
 import io.rebble.libpebblecommon.structmapper.SBytes
 import io.rebble.libpebblecommon.structmapper.SUInt
@@ -22,7 +23,10 @@ class Datalogging(
 
     private val _thirdPartyEvents = MutableSharedFlow<ThirdPartyDatalogEvent>(extraBufferCapacity = 256)
 
-    /** Data logging events of third-party watchapps, in protocol order. */
+    /**
+     * Data logging events of third-party watchapps, in protocol order. Inert until something
+     * collects it: PebbleKit 2 delivery on Android, stoandl's DatalogStore on JVM.
+     */
     val thirdPartyEvents: SharedFlow<ThirdPartyDatalogEvent> = _thirdPartyEvents.asSharedFlow()
 
     fun logData(
@@ -33,6 +37,7 @@ class Datalogging(
         data: ByteArray,
         watchInfo: WatchInfo,
         itemSize: UShort,
+        itemType: DataItemType,
         itemsLeft: UInt,
     ) {
         if (uuid == SYSTEM_APP_UUID) {
@@ -86,6 +91,7 @@ class Datalogging(
             timestamp = timestamp,
             itemSize = itemSize,
             watchSerial = watchInfo.serial,
+            itemType = itemType,
             itemsLeft = itemsLeft,
             data = data,
         )
@@ -145,13 +151,17 @@ sealed interface ThirdPartyDatalogEvent {
     val itemSize: UShort
     val watchSerial: String
 
-    /** One batch of whole items. [itemsLeft] is the number of items that stay on the watch. */
+    /**
+     * One batch of whole items. [itemType] says how to decode each item (the session's type from
+     * OpenSession). [itemsLeft] is the number of items that stay on the watch.
+     */
     data class Batch(
         override val uuid: Uuid,
         override val tag: UInt,
         override val timestamp: UInt,
         override val itemSize: UShort,
         override val watchSerial: String,
+        val itemType: DataItemType,
         val itemsLeft: UInt,
         val data: ByteArray,
     ) : ThirdPartyDatalogEvent

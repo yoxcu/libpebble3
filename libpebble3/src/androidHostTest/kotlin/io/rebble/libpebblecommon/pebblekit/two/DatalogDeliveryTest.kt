@@ -1,6 +1,7 @@
 package io.rebble.libpebblecommon.pebblekit.two
 
 import io.rebble.libpebblecommon.datalogging.ThirdPartyDatalogEvent
+import io.rebble.libpebblecommon.packets.DataItemType
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -16,6 +17,7 @@ private fun batch(seq: Int, itemsLeft: UInt = 0u) = ThirdPartyDatalogEvent.Batch
     timestamp = 1000u,
     itemSize = 4u,
     watchSerial = "SERIAL",
+    itemType = DataItemType.ByteArray,
     itemsLeft = itemsLeft,
     data = byteArrayOf(seq.toByte(), 0, 0, 0),
 )
