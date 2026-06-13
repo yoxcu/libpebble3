@@ -80,7 +80,7 @@ class GraalJsRunner(
             bindings.putMember("_Pebble", privatePkjsIface)
             bindings.putMember("_XMLHTTPRequestManager", xhrManager)
             bindings.putMember("_Timeout", timeoutManager)
-            bindings.putMember("_PebbleGeo", GraalGeolocationStub())
+            bindings.putMember("_PebbleGeo", GraalGeolocationInterface(jsScope, this@GraalJsRunner))
             bindings.putMember("localStorage", localStorage)
 
             ctx.eval("js", BOOTSTRAP_JS)
@@ -194,14 +194,20 @@ class GraalJsRunner(
     }
 }
 
-class GraalGeolocationStub {
-    val unsupported: Boolean = true
-    fun getRequestCallbackID(): Int = 0
-    fun getWatchCallbackID(): Int = 0
-    fun getCurrentPosition(id: Int, maxAge: Double, timeout: Double, highAccuracy: Int) {}
-    fun watchPosition(id: Int, interval: Double, highAccuracy: Int): Int = 0
-    fun clearWatch(id: Int) {}
-}
+/**
+ * JVM `navigator.geolocation` bridge, symmetric with Android's [WebViewGeolocationInterface] and
+ * iOS's `JSCGeolocationInterface`: the shared [GeolocationInterface] does all the work (callback-id
+ * bookkeeping, permission check, dispatching results back into the JS context via `_PebbleGeoCB`),
+ * delegating the actual fix to the Koin-injected `SystemGeolocation`. On JVM that binding is a no-op
+ * by default — a host (e.g. stoandl) overrides it with a real provider (GeoClue) to make this live.
+ *
+ * GraalJS exposes the public `open` methods directly to JS, so no per-method annotations are needed
+ * (unlike Android's `@JavascriptInterface`).
+ */
+class GraalGeolocationInterface(
+    scope: CoroutineScope,
+    jsRunner: JsRunner,
+) : GeolocationInterface(scope, jsRunner)
 
 private val BOOTSTRAP_JS = """
 var console = {
