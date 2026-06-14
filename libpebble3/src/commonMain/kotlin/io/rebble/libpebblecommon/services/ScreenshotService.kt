@@ -5,6 +5,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toArgb
 import co.touchlab.kermit.Logger
 import io.rebble.libpebblecommon.connection.ConnectedPebble
+import io.rebble.libpebblecommon.connection.ConnectedPebble.RawScreenshot
 import io.rebble.libpebblecommon.connection.PebbleProtocolHandler
 import io.rebble.libpebblecommon.di.ConnectionCoroutineScope
 import io.rebble.libpebblecommon.packets.ScreenshotData
@@ -37,6 +38,9 @@ class ScreenshotService(
     private val state = MutableStateFlow(ScreenshotState.Idle)
 
     override suspend fun takeScreenshot(): ImageBitmap? =
+        takeScreenshotPixels()?.let { createImageBitmapFromPixelArray(it.argb, it.width, it.height) }
+
+    override suspend fun takeScreenshotPixels(): RawScreenshot? =
         withContext(connectionCoroutineScope.coroutineContext + Dispatchers.IO) {
             try {
                 if (state.value == ScreenshotState.Busy) {
@@ -114,7 +118,7 @@ class ScreenshotService(
                                     pixels[index] = if (bit == 0) Color.Black.toArgb() else Color.White.toArgb()
                                 }
                             }
-                            createImageBitmapFromPixelArray(pixels = pixels, width = finalHeader.width, height = finalHeader.height)
+                            RawScreenshot(width = finalHeader.width, height = finalHeader.height, argb = pixels)
                         }
                         ScreenshotVersion.COLOR_8_BIT -> {
                             val buffer = data ?: throw IllegalStateException("data buffer is null")
@@ -137,7 +141,7 @@ class ScreenshotService(
                                     pixels[index] = color
                                 }
                             }
-                            createImageBitmapFromPixelArray(pixels = pixels, width = finalHeader.width, height = finalHeader.height)
+                            RawScreenshot(width = finalHeader.width, height = finalHeader.height, argb = pixels)
                         }
                     }
                 } else {
