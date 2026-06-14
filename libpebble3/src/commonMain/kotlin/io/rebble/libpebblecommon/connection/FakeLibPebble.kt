@@ -694,6 +694,13 @@ class FakeConnectedDevice(
         return ImageBitmap(width, height).apply { readPixels(buffer) }
     }
 
+    override suspend fun takeScreenshotPixels(): ConnectedPebble.RawScreenshot {
+        // Mirror takeScreenshot's placeholder: a 144×168 orange square.
+        val width = 144
+        val height = 168
+        return ConnectedPebble.RawScreenshot(width, height, IntArray(width * height) { Color(0xFFFA4A36).toArgb() })
+    }
+
     override fun installLanguagePack(path: Path, name: String) {
     }
 

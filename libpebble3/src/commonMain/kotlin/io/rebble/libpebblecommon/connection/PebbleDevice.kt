@@ -146,7 +146,23 @@ object ConnectedPebble {
 
     interface Screenshot {
         suspend fun takeScreenshot(): ImageBitmap?
+
+        /**
+         * Capture a screenshot as a raw, platform-independent ARGB image (no Compose/Skia dependency).
+         * Returns null on timeout, error, or if a capture is already in progress.
+         *
+         * [takeScreenshot] is the Compose path (used on Android/iOS); on the JVM/desktop build
+         * `ImageBitmap` has no usable backing, so this is the way to get pixels out — a caller can
+         * encode them to PNG itself.
+         */
+        suspend fun takeScreenshotPixels(): RawScreenshot?
     }
+
+    /**
+     * A decoded watch screenshot: [width] × [height] pixels in row-major order, each an ARGB Int
+     * (0xAARRGGBB, fully opaque). Independent of any image library so JVM callers can encode it.
+     */
+    class RawScreenshot(val width: Int, val height: Int, val argb: IntArray)
 
     interface Logs {
         suspend fun gatherLogs(): Path?
