@@ -3,11 +3,12 @@ package io.rebble.libpebblecommon.js
 import com.russhwolf.settings.PropertiesSettings
 import com.russhwolf.settings.Settings
 import io.rebble.libpebblecommon.connection.AppContext
+import io.rebble.libpebblecommon.stoandlConfigDir
 import java.io.File
 import java.util.Properties
 
 internal actual fun createJSSettings(appContext: AppContext, id: String): Settings {
-    val dir = File(System.getProperty("user.home"), ".config/stoandl/pkjs")
+    val dir = File(stoandlConfigDir(), "pkjs")
     dir.mkdirs()
     val file = File(dir, "$id.properties")
     val props = Properties()
