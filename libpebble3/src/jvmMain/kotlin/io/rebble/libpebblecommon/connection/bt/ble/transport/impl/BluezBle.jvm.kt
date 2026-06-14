@@ -14,8 +14,10 @@ import io.rebble.libpebblecommon.connection.bt.ble.transport.GattService
 import io.rebble.libpebblecommon.connection.bt.ble.transport.GattWriteType
 import io.rebble.libpebblecommon.di.ConnectionCoroutineScope
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -241,6 +243,11 @@ class BluezGattConnector(
 
     private var conn: DBusConnection? = null
     private var lifecycleHandle: AutoCloseable? = null
+    private var reasonHandle: AutoCloseable? = null
+    // Last org.bluez.Device1.Disconnected reason (e.g. "org.bluez.Reason.Timeout"), captured just
+    // before the Connected=false edge so the "link dropped" log can name why. Best-effort: empty on
+    // BlueZ < 5.83 (no such signal) or if the property edge happens to be delivered first.
+    @Volatile private var lastDropReason: String? = null
     private var attempted = false
 
     override suspend fun connect(): GattConnectionResult {
@@ -273,12 +280,29 @@ class BluezGattConnector(
                 }
                 (unwrap(changed["Connected"]) as? Boolean)?.let {
                     if (!it && linkUp.get()) {
-                        logger.i { "device reported Connected=false (link dropped)" }
+                        logger.i { "device reported Connected=false (link dropped${reasonSuffix(lastDropReason)})" }
                         if (!_disconnected.isCompleted) _disconnected.complete(ConnectionFailureReason.FailedToConnect)
                     }
                 }
             } catch (e: Exception) {
                 logger.w(e) { "lifecycle handler error" }
+            }
+        }
+
+        // Capture the BlueZ disconnect reason so the "link dropped" log can tell out-of-range
+        // (Reason.Timeout) from a broken bond (Reason.Authentication) without a btmon snoop. The
+        // org.bluez.Device1.Disconnected(reason, message) signal lands in BlueZ >= 5.83, normally
+        // just before the Connected=false property edge; on older BlueZ it never fires and the log
+        // simply omits the reason. (The churn detector in PebbleIntegration keys broken-bond
+        // detection off this same signal — this is purely for diagnosability.)
+        val reasonRule = DBusMatchRuleBuilder.create()
+            .withType("signal").withInterface(DEVICE1)
+            .withMember("Disconnected").withPath(path).build()
+        reasonHandle = c.addGenericSigHandler(reasonRule) { msg: DBusSignal ->
+            try {
+                lastDropReason = msg.getParameters()?.getOrNull(0) as? String
+            } catch (e: Exception) {
+                logger.v(e) { "reason handler error" }
             }
         }
 
@@ -291,16 +315,20 @@ class BluezGattConnector(
         attempted = true
         if (readBool(props, "ServicesResolved")) resolved.complete(true)
 
-        // Tear down the property watcher once this connection ends. On a successful connect the watcher
-        // is left installed (it's how we surface the eventual disconnect), but nothing closed it — so on
-        // a one-sided/stale bond, where BlueZ's Trusted auto-connect keeps re-establishing a dead link,
-        // a handler leaks per cycle and they all fire (the duplicated "link dropped" logs). Closing it
-        // when _disconnected completes stops the leak. (On the failure/cancel paths close() in the
-        // finally already handles it; double-close is harmless.)
-        scope.launch {
-            _disconnected.await()
-            try { lifecycleHandle?.close() } catch (_: Exception) {}
-        }
+        // Tear down this connector (both signal handlers AND the DBusConnection) exactly once when the
+        // connection ends. On a successful connect close() is never reached via the finally below
+        // (succeeded=true), so without this the handlers + connection leak for the life of every
+        // session — and on a one-sided/stale bond, where BlueZ's Trusted auto-connect keeps
+        // re-establishing a dead link, a fresh handler leaks per cycle and they ALL fire on the next
+        // drop (the duplicated "link dropped" logs).
+        //
+        // This must NOT run in `scope`: that's the per-connection ConnectionCoroutineScope, which the
+        // reconnect machinery cancels in cleanup() the instant the connection ends — racing the await
+        // and frequently skipping the close (the actual cause of the leak the old comment described).
+        // invokeOnCompletion fires regardless of any scope's cancellation; it just hands the blocking
+        // close() to an independent IO coroutine (closing a DBusConnection from its own signal-receiver
+        // thread, where _disconnected completes, would deadlock).
+        _disconnected.invokeOnCompletion { cleanupScope.launch { close() } }
 
         // Standing connection intent. Keep a Device1.Connect() pending and re-issue it slowly; NEVER
         // call Disconnect() on failure — that cancels BlueZ's kernel connect intent and is what turned
@@ -381,6 +409,7 @@ class BluezGattConnector(
 
     override fun close() {
         try { lifecycleHandle?.close() } catch (_: Exception) {}
+        try { reasonHandle?.close() } catch (_: Exception) {}
         try { conn?.disconnect() } catch (_: Exception) {}
         conn = null
     }
@@ -389,7 +418,28 @@ class BluezGattConnector(
         (unwrap(props.Get<Any>(DEVICE1, name)) as? Boolean) ?: false
     } catch (_: Exception) { false }
 
+    // Render a BlueZ disconnect reason as a short, log-friendly suffix. Strips the "org.bluez.Reason."
+    // prefix and adds a plain-English hint for the two that matter to the reconnect saga.
+    private fun reasonSuffix(reason: String?): String {
+        if (reason.isNullOrBlank()) return ""
+        val short = reason.removePrefix("org.bluez.Reason.")
+        val hint = when (short) {
+            "Timeout" -> " — out of range"
+            "Authentication" -> " — auth failure / broken bond"
+            "ConnectionAttemptFailed" -> " — RF connection failed (0x3e)"
+            "LocalHostTerminated" -> " — local host terminated"
+            "RemoteUserTerminated" -> " — watch terminated"
+            else -> ""
+        }
+        return ", reason: $short$hint"
+    }
+
     companion object {
+        // Independent of any per-connection scope so end-of-connection teardown (close()) still runs
+        // after the reconnect machinery cancels the ConnectionCoroutineScope. Only ever runs a brief
+        // close(); SupervisorJob so one failing teardown can't take down the next.
+        private val cleanupScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
         // How often to re-issue Device1.Connect() while arming. Long, because a single Connect()
         // already leaves a standing kernel intent (BlueZ keeps trying after the D-Bus call's client
         // reply times out); this is only insurance in case BlueZ drops it. Must exceed the ~20s D-Bus
