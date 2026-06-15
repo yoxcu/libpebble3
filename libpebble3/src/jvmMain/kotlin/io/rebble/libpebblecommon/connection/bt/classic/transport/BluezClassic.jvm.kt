@@ -67,27 +67,6 @@ internal fun findClassicAdapterPath(conn: DBusConnection): String? = try {
 }
 
 /**
- * Best-effort SDP resolution of the watch's Serial Port (0x1101) RFCOMM channel via `sdptool` — the
- * channel can change across re-pairs, so we don't want to hardcode it. Returns null on any failure
- * (the caller falls back to the configured/identifier channel). A native L2CAP-SDP query would remove
- * the sdptool dependency; left as a follow-up.
- */
-internal fun resolveSppChannel(mac: String): Int? = try {
-    val proc = ProcessBuilder("sdptool", "browse", "--tree", mac)
-        .redirectErrorStream(true).start()
-    val out = proc.inputStream.bufferedReader().readText()
-    proc.waitFor()
-    out.split(Regex("\\n\\s*\\n")).firstNotNullOfOrNull { block ->
-        if (block.contains("0x1101") || block.contains("Serial Port", ignoreCase = true)) {
-            Regex("Channel[:/]?\\s*(\\d+)").find(block)?.groupValues?.get(1)?.toIntOrNull()
-        } else null
-    }
-} catch (e: Exception) {
-    clog.d { "resolveSppChannel($mac) failed: ${e.message}" }
-    null
-}
-
-/**
  * BR/EDR (Bluetooth Classic) scanner: discovers classic-era Pebbles via BlueZ inquiry. Mirrors
  * BluezBleScanner but with Transport=bredr, emitting a [PebbleBtClassicIdentifier]. A discovered
  * device object is what lets the connector's Device1.Pair() do a BR/EDR bond.

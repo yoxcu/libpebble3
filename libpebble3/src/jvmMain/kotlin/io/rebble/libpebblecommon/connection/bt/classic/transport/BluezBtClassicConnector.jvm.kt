@@ -40,7 +40,7 @@ class BluezBtClassicConnector(
         // attempt) by the daemon, because a blocking Pair() (~10s, user taps the watch) races the
         // connection-attempt timeout. Here we just open the RFCOMM data link.
         // Resolve the SPP RFCOMM channel via SDP; fall back to the configured/identifier channel.
-        val sdpChannel = withContext(Dispatchers.IO) { resolveSppChannel(identifier.macAddress) }
+        val sdpChannel = withContext(Dispatchers.IO) { BluezRfcommSocket.resolveSppChannel(identifier.macAddress) }
         val primary = sdpChannel ?: identifier.rfcommChannel
         logger.i {
             "connect() RFCOMM to ${identifier.macAddress} channel $primary " +
