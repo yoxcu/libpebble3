@@ -108,12 +108,15 @@ class BluezClassicScanner : ClassicScanner {
                     var matched = 0
                     objMgr.GetManagedObjects().forEach { (p, ifaces) ->
                         val dp = ifaces[CLASSIC_DEVICE1] ?: return@forEach
+                        // CRITICAL: GetManagedObjects returns ALL devices, including BLE ones surfaced by
+                        // a concurrent LE scan. Only a real BR/EDR device has a Class of Device — require
+                        // it, so a BLE-native watch (Time 2 / Pebble 2) is never misclassified as Classic.
+                        if (unwrapV(dp["Class"]) == null) return@forEach
                         val name = (unwrapV(dp["Name"]) as? String)
                             ?: (unwrapV(dp["Alias"]) as? String) ?: ""
                         val addr = (unwrapV(dp["Address"]) as? String) ?: return@forEach
                         // Classic-era Pebble: a BR/EDR device named "Pebble …" (e.g. "Pebble Time 1E81").
-                        // Exclude the "Pebble Time LE …" BLE bridge name defensively (it shouldn't appear
-                        // under a bredr filter anyway).
+                        // Exclude the "Pebble Time LE …" BLE bridge name defensively.
                         if (!name.startsWith("Pebble", ignoreCase = true)) return@forEach
                         if (name.contains(" LE ", ignoreCase = true)) return@forEach
                         val rssi = (unwrapV(dp["RSSI"]) as? Number)?.toInt() ?: 0
