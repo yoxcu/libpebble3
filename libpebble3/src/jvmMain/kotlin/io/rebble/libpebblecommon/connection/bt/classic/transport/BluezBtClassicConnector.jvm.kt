@@ -11,9 +11,12 @@ import io.rebble.libpebblecommon.di.ConnectionCoroutineScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.consumeAsFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * JVM/Linux Bluetooth Classic connector — the BlueZ port of [AndroidBtClassicConnector]. Dials the
@@ -36,40 +39,59 @@ class BluezBtClassicConnector(
     @Volatile private var socket: BluezRfcommSocket? = null
 
     override suspend fun connect(): ClassicConnectionResult {
-        // The watch must already be BR/EDR-bonded — pairing is done up-front (outside this connect
-        // attempt) by the daemon, because a blocking Pair() (~10s, user taps the watch) races the
-        // connection-attempt timeout. Here we just open the RFCOMM data link.
-        // Resolve the SPP RFCOMM channel via SDP; fall back to the configured/identifier channel.
+        // The watch must already be BR/EDR-bonded (the daemon pairs up-front). Resolve the SPP channel
+        // via SDP once (needs the watch reachable); fall back to the configured/identifier channel.
         val sdpChannel = withContext(Dispatchers.IO) { BluezRfcommSocket.resolveSppChannel(identifier.macAddress) }
-        val primary = sdpChannel ?: identifier.rfcommChannel
+        val channel = sdpChannel ?: identifier.rfcommChannel
         logger.i {
-            "connect() RFCOMM to ${identifier.macAddress} channel $primary " +
+            "connecting RFCOMM to ${identifier.macAddress} channel $channel " +
                 (if (sdpChannel != null) "(SDP-resolved)" else "(fallback)")
         }
-        var sock = try {
-            withContext(Dispatchers.IO) { BluezRfcommSocket.connect(identifier.macAddress, primary) }
-        } catch (e: Exception) {
-            logger.w { "RFCOMM connect on channel $primary failed: ${e.message}" }
-            null
-        }
-        // If the SDP-resolved channel failed, try the configured fallback channel once.
-        if (sock == null && primary != identifier.rfcommChannel) {
-            logger.i { "retrying RFCOMM on fallback channel ${identifier.rfcommChannel}" }
-            sock = try {
-                withContext(Dispatchers.IO) { BluezRfcommSocket.connect(identifier.macAddress, identifier.rfcommChannel) }
+
+        // Standing connection loop. BR/EDR has no kernel background auto-connect (that's BLE-only), so we
+        // page the watch ourselves and retry with backoff until it's reachable — but QUIETLY (one INFO
+        // when it goes out of range, DEBUG thereafter), so an out-of-range watch isn't noisy. (Returning
+        // Failure per attempt made WatchManager re-spawn the connector and log an ERROR every cycle.)
+        // Mirrors BluezGattConnector's standing-intent model; loop ends only when the scope is cancelled
+        // (BT off / requestDisconnection / connect another watch / forget).
+        var attempt = 0
+        var away = false
+        while (connectionCoroutineScope.isActive && !_disconnected.isCompleted) {
+            val sock = try {
+                withContext(Dispatchers.IO) { BluezRfcommSocket.connect(identifier.macAddress, channel) }
             } catch (e: Exception) {
-                logger.w { "RFCOMM connect on fallback channel failed: ${e.message}" }
                 null
             }
+            if (sock != null) {
+                socket = sock
+                logger.i { if (away) "RFCOMM reconnected" else "RFCOMM connected" }
+                startPumps(sock)
+                return ClassicConnectionResult.Success
+            }
+            attempt++
+            if (!away) {
+                logger.i { "${identifier.macAddress} not reachable (out of range?) — retrying quietly until it returns" }
+                away = true
+            } else {
+                logger.d { "rfcomm connect retry $attempt failed" }
+            }
+            // Back off to keep airtime/noise low, but stay responsive to cancellation within ~2s.
+            val backoffSecs = when {
+                attempt <= 4 -> 5
+                attempt <= 12 -> 15
+                else -> 30
+            }
+            var waited = 0
+            while (waited < backoffSecs && connectionCoroutineScope.isActive && !_disconnected.isCompleted) {
+                delay(2.seconds)
+                waited += 2
+            }
         }
-        if (sock == null) {
-            logger.w { "RFCOMM connect failed (is the watch BR/EDR-bonded and in range?)" }
-            if (!_disconnected.isCompleted) _disconnected.complete(ConnectionFailureReason.ClassicConnectionFailed)
-            return ClassicConnectionResult.Failure
-        }
-        socket = sock
-        logger.i { "RFCOMM connected" }
+        if (!_disconnected.isCompleted) _disconnected.complete(ConnectionFailureReason.ClassicConnectionFailed)
+        return ClassicConnectionResult.Failure
+    }
 
+    private fun startPumps(sock: BluezRfcommSocket) {
         // Inbound: socket → Pebble protocol. A read returning <=0 means the link closed.
         connectionCoroutineScope.launch(Dispatchers.IO) {
             val data = ByteArray(1024)
@@ -96,7 +118,6 @@ class BluezBtClassicConnector(
                 if (!_disconnected.isCompleted) _disconnected.complete(ConnectionFailureReason.ClassicDisconnected)
             }
         }
-        return ClassicConnectionResult.Success
     }
 
     override suspend fun disconnect() {
