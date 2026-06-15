@@ -17,11 +17,21 @@ actual fun String.asPebbleBleIdentifier(): PebbleBleIdentifier {
     return PebbleBleIdentifier(this)
 }
 
-actual class PebbleBtClassicIdentifier internal constructor() : PebbleIdentifier {
-    actual override val asString: String
-        get() = throw UnsupportedOperationException("BT Classic not supported on JVM")
+// Bluetooth Classic (BR/EDR) identifier on JVM/Linux: a BlueZ MAC address plus the RFCOMM channel
+// of the watch's SPP service (resolved via SDP; defaults to 1). [asString] is just the MAC so it is a
+// stable key for WatchManager and maps directly to the BlueZ object path (dev_AA_BB_...).
+actual class PebbleBtClassicIdentifier(
+    val macAddress: String,
+    val rfcommChannel: Int = 1,
+) : PebbleIdentifier {
+    actual override val asString: String = macAddress
+
+    override fun equals(other: Any?): Boolean =
+        other is PebbleBtClassicIdentifier && macAddress == other.macAddress
+    override fun hashCode(): Int = macAddress.hashCode()
+    override fun toString(): String = "$macAddress (ch$rfcommChannel)"
 }
 
 actual fun String.asPebbleBtClassicIdentifier(): PebbleBtClassicIdentifier {
-    throw UnsupportedOperationException("BT Classic not supported on JVM")
+    return PebbleBtClassicIdentifier(this)
 }
