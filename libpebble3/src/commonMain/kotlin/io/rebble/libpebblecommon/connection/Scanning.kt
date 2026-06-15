@@ -73,7 +73,7 @@ class RealScanning(
                         return@collect
                     }
                     val pebbleScanRecord = it.manufacturerData.data.decodePebbleScanRecord()
-                    if (shouldHideLegacyClassicWatch(pebbleScanRecord)) {
+                    if (shouldHideLegacyClassicWatch(pebbleScanRecord, it.name)) {
                         return@collect
                     }
                     val device = PebbleScanResult(
@@ -131,13 +131,18 @@ class RealScanning(
     }
 
     /**
-     * Hide Aplite/Basalt/Chalk watches from BLE scan results on platforms that support BT Classic
-     * (Android), so users go through the dedicated Classic scan instead. Older firmware without
-     * extendedInfo can't be classified — we let those through pessimistically.
+     * Hide Aplite/Basalt/Chalk (classic-capable) watches from BLE scan results on platforms that
+     * support BT Classic, so they go through the dedicated Classic path instead of their flaky BLE
+     * bridge. Classified two ways: the advert's extendedInfo hardwarePlatform when present, AND the
+     * "Pebble … LE …" dual-mode bridge name (only classic-capable watches advertise the "LE" name —
+     * BLE-native watches like Pebble 2 / Time 2 don't) which covers adverts that carry no extendedInfo.
      */
-    private fun shouldHideLegacyClassicWatch(record: PebbleLeScanRecord): Boolean {
+    private fun shouldHideLegacyClassicWatch(record: PebbleLeScanRecord, name: String): Boolean {
         if (!blePlatformConfig.supportsBtClassic) return false
         if (watchConfig.value.allowLegacyWatchesInBleScan) return false
+        if (name.startsWith("Pebble", ignoreCase = true) &&
+            Regex("""\bLE\b""", RegexOption.IGNORE_CASE).containsMatchIn(name)
+        ) return true
         val hardwarePlatform = record.extendedInfo?.hardwarePlatform ?: return false
         val watchType = WatchHardwarePlatform.fromProtocolNumber(hardwarePlatform.toUByte()).watchType
         return watchType.supportsBtClassic()
