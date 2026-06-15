@@ -57,6 +57,11 @@ internal class BluezRfcommSocket private constructor(private val fd: Int) {
         private const val SOL_BLUETOOTH = 274
         private const val BT_SECURITY = 4
         private const val BT_SECURITY_MEDIUM = 2
+        private const val BTPROTO_L2CAP = 0
+        private const val SOCK_SEQPACKET = 5
+        private const val SOL_SOCKET = 1
+        private const val SO_RCVTIMEO = 20
+        private const val SDP_PSM = 1
 
         /** "B0:B4:48:B6:1E:81" → bdaddr_t (6 bytes, little-endian, i.e. reversed). */
         private fun macToBdaddrLe(mac: String): ByteArray {
@@ -64,6 +69,55 @@ internal class BluezRfcommSocket private constructor(private val fd: Int) {
             require(parts.size == 6) { "bad MAC: $mac" }
             val be = ByteArray(6) { parts[it].toInt(16).toByte() }
             return ByteArray(6) { be[5 - it] }  // reverse → little-endian bdaddr
+        }
+
+        /**
+         * Resolve the watch's Serial Port (0x1101) RFCOMM channel via a native SDP query over L2CAP
+         * (PSM 1) — no `sdptool` dependency. Best-effort: null on any failure (caller falls back to the
+         * configured channel). Connects SDP, sends a ServiceSearchAttributeRequest for SerialPort, and
+         * pulls the RFCOMM channel out of the response (UUID16 0x0003 followed by a uint8 channel).
+         */
+        fun resolveSppChannel(mac: String): Int? {
+            val fd = C.socket(AF_BLUETOOTH, SOCK_SEQPACKET, BTPROTO_L2CAP)
+            if (fd < 0) return null
+            try {
+                // 3s receive timeout so a silent / torn-down SDP server can't hang us
+                // (struct timeval { long tv_sec; long tv_usec; } — 16 bytes on 64-bit).
+                val tv = ByteArray(16).also { it[0] = 3 }  // tv_sec = 3
+                C.setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, tv, tv.size)
+                // struct sockaddr_l2 { family(2); psm(2,LE); bdaddr(6); cid(2); bdaddr_type(1); } = 14
+                val addr = ByteArray(14)
+                addr[0] = (AF_BLUETOOTH and 0xff).toByte()
+                addr[1] = ((AF_BLUETOOTH shr 8) and 0xff).toByte()
+                addr[2] = (SDP_PSM and 0xff).toByte()
+                macToBdaddrLe(mac).copyInto(addr, destinationOffset = 4)
+                if (C.connect(fd, addr, addr.size) != 0) return null
+                // SDP_ServiceSearchAttributeRequest: search SerialPort(0x1101), attr range 0x0000-0xFFFF.
+                val req = byteArrayOf(
+                    0x06, 0x00, 0x00, 0x00, 0x0F,
+                    0x35, 0x03, 0x19, 0x11, 0x01,
+                    0xFF.toByte(), 0xFF.toByte(),
+                    0x35, 0x05, 0x0A, 0x00, 0x00, 0xFF.toByte(), 0xFF.toByte(),
+                    0x00,
+                )
+                if (C.write(fd, req, NativeLong(req.size.toLong())).toInt() <= 0) return null
+                val buf = ByteArray(4096)
+                val n = C.read(fd, buf, NativeLong(buf.size.toLong())).toInt()
+                if (n <= 4) return null
+                // RFCOMM protocol descriptor: UUID16(0x0003) then uint8 channel → 19 00 03 08 <ch>.
+                for (i in 0..(n - 5)) {
+                    if (buf[i] == 0x19.toByte() && buf[i + 1] == 0x00.toByte() &&
+                        buf[i + 2] == 0x03.toByte() && buf[i + 3] == 0x08.toByte()
+                    ) {
+                        return buf[i + 4].toInt() and 0xff
+                    }
+                }
+                return null
+            } catch (e: Throwable) {
+                return null
+            } finally {
+                try { C.close(fd) } catch (_: Throwable) {}
+            }
         }
 
         /** Open a secure RFCOMM connection to [mac] on [channel], or throw. */
