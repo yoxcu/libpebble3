@@ -7,8 +7,6 @@ import io.rebble.libpebblecommon.connection.PebbleBtClassicIdentifier
 import io.rebble.libpebblecommon.connection.PebbleProtocolStreams
 import io.rebble.libpebblecommon.connection.bt.classic.pebble.BtClassicConnector
 import io.rebble.libpebblecommon.connection.bt.classic.pebble.ClassicConnectionResult
-import io.rebble.libpebblecommon.connection.bt.createBondClassic
-import io.rebble.libpebblecommon.connection.bt.isBondedClassic
 import io.rebble.libpebblecommon.di.ConnectionCoroutineScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
@@ -38,17 +36,9 @@ class BluezBtClassicConnector(
     @Volatile private var socket: BluezRfcommSocket? = null
 
     override suspend fun connect(): ClassicConnectionResult {
-        // Auto-pair if needed (BR/EDR SSP; agent auto-confirms host-side, user confirms on the watch).
-        if (!withContext(Dispatchers.IO) { isBondedClassic(identifier) }) {
-            logger.i { "not BR/EDR-bonded — pairing ${identifier.macAddress} (confirm the code on the watch)" }
-            val paired = withContext(Dispatchers.IO) { createBondClassic(identifier) }
-            if (!paired) {
-                logger.w { "BR/EDR pairing failed" }
-                if (!_disconnected.isCompleted) _disconnected.complete(ConnectionFailureReason.ClassicConnectionFailed)
-                return ClassicConnectionResult.Failure
-            }
-        }
-
+        // The watch must already be BR/EDR-bonded — pairing is done up-front (outside this connect
+        // attempt) by the daemon, because a blocking Pair() (~10s, user taps the watch) races the
+        // connection-attempt timeout. Here we just open the RFCOMM data link.
         // Resolve the SPP RFCOMM channel via SDP; fall back to the configured/identifier channel.
         val sdpChannel = withContext(Dispatchers.IO) { resolveSppChannel(identifier.macAddress) }
         val primary = sdpChannel ?: identifier.rfcommChannel

@@ -131,6 +131,11 @@ class PebbleDeviceFactory {
                             rssi = scanResult.rssi,
                         )
 
+                    // A discovered BT Classic watch (no leScanRecord) — a valid discovered device, not
+                    // an error. Returning the base [pebbleDevice] keeps it connectable once connectGoal
+                    // is set, instead of logging "not sure how to create a device".
+                    scanResult != null && identifier is PebbleBtClassicIdentifier -> pebbleDevice
+
                     knownDevice != null -> knownDevice
 
                     else -> {
