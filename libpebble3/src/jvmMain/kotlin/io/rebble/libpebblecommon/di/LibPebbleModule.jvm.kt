@@ -15,7 +15,10 @@ import io.rebble.libpebblecommon.connection.OtherPebbleApps
 import io.rebble.libpebblecommon.connection.PhoneCapabilities
 import io.rebble.libpebblecommon.connection.PlatformFlags
 import io.rebble.libpebblecommon.connection.bt.ble.BlePlatformConfig
+import io.rebble.libpebblecommon.connection.bt.classic.pebble.BtClassicConnector
+import io.rebble.libpebblecommon.connection.bt.classic.transport.BluezBtClassicConnector
 import io.rebble.libpebblecommon.connection.bt.classic.transport.ClassicScanner
+import org.koin.dsl.bind
 import io.rebble.libpebblecommon.connection.endpointmanager.timeline.PlatformNotificationActionHandler
 import io.rebble.libpebblecommon.contacts.SystemContact
 import io.rebble.libpebblecommon.contacts.SystemContacts
@@ -70,8 +73,17 @@ actual val platformModule: Module = module {
             // reconnect model in BluezGattConnector; kept as a small reconnect hygiene margin.
             delayBleDisconnections = true,
             sendPpogResetOnDisconnection = true,
-            supportsBtClassic = false,
+            // BR/EDR transport implemented (BluezBtClassicConnector). This also hides classic-capable
+            // watches (e.g. Time Steel) from the BLE scan so they go through the reliable Classic path,
+            // while BLE-native watches (Time 2 / Pebble 2) keep using BLE unaffected.
+            supportsBtClassic = true,
         )
+    }
+
+    // Per-connection BT Classic connector (mirrors the Android binding). Resolved only for a
+    // PebbleBtClassicIdentifier; BLE connections never touch this.
+    scope<ConnectionScope> {
+        scoped { BluezBtClassicConnector(get(), get(), get()) } bind BtClassicConnector::class
     }
 
     single { PlatformConfig(syncNotificationApps = false) }

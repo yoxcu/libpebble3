@@ -206,6 +206,8 @@ kotlin {
         jvmMain.dependencies {
             implementation("com.github.hypfvieh:dbus-java-core:5.2.0")
             implementation("com.github.hypfvieh:dbus-java-transport-native-unixsocket:5.2.0")
+            // AF_BLUETOOTH RFCOMM socket for the BT Classic transport (JVM has no native BT sockets).
+            implementation("net.java.dev.jna:jna:5.14.0")
             implementation("org.graalvm.polyglot:polyglot:24.2.1")
             implementation("org.graalvm.polyglot:js-community:24.2.1")
         }
