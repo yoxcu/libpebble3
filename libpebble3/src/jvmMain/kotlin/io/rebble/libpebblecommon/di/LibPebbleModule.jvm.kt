@@ -17,6 +17,7 @@ import io.rebble.libpebblecommon.connection.PlatformFlags
 import io.rebble.libpebblecommon.connection.bt.ble.BlePlatformConfig
 import io.rebble.libpebblecommon.connection.bt.classic.pebble.BtClassicConnector
 import io.rebble.libpebblecommon.connection.bt.classic.transport.BluezBtClassicConnector
+import io.rebble.libpebblecommon.connection.bt.classic.transport.BluezClassicScanner
 import io.rebble.libpebblecommon.connection.bt.classic.transport.ClassicScanner
 import org.koin.dsl.bind
 import io.rebble.libpebblecommon.connection.endpointmanager.timeline.PlatformNotificationActionHandler
@@ -190,10 +191,5 @@ actual val platformModule: Module = module {
         }
     }
 
-    single<ClassicScanner> {
-        object : ClassicScanner {
-            override fun scan(): Flow<io.rebble.libpebblecommon.connection.PebbleScanResult> =
-                emptyFlow()
-        }
-    }
+    single<ClassicScanner> { BluezClassicScanner() }
 }
