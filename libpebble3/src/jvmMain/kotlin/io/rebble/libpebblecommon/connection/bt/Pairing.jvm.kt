@@ -5,6 +5,8 @@ import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.connection.PebbleBleIdentifier
 import io.rebble.libpebblecommon.connection.PebbleBtClassicIdentifier
 import io.rebble.libpebblecommon.connection.bt.ble.pebble.ConnectivityStatus
+import io.rebble.libpebblecommon.connection.bt.classic.transport.ClassicDevice1
+import io.rebble.libpebblecommon.connection.bt.classic.transport.findClassicDevicePath
 import io.rebble.libpebblecommon.connection.bt.ble.pebble.LEConstants.BOND_BONDED
 import io.rebble.libpebblecommon.connection.bt.ble.pebble.LEConstants.BOND_NONE
 import kotlinx.coroutines.channels.awaitClose
@@ -142,8 +144,55 @@ actual fun getBluetoothDevicePairEvents(
     }
 }
 
-actual fun isBondedClassic(identifier: PebbleBtClassicIdentifier): Boolean = false
-actual fun createBondClassic(identifier: PebbleBtClassicIdentifier): Boolean = false
+actual fun isBondedClassic(identifier: PebbleBtClassicIdentifier): Boolean {
+    return try {
+        val conn = DBusConnectionBuilder.forSystemBus().withShared(false).build()
+        try {
+            val path = findClassicDevicePath(conn, identifier.macAddress) ?: return false
+            val props = conn.getRemoteObject("org.bluez", path, Properties::class.java)
+            val bonded = props.Get<Any>("org.bluez.Device1", "Bonded")
+            when (bonded) {
+                is Boolean -> bonded
+                is Variant<*> -> bonded.value as? Boolean ?: false
+                else -> false
+            }
+        } finally {
+            conn.disconnect()
+        }
+    } catch (e: Exception) {
+        log.d { "isBondedClassic(${identifier.macAddress}) failed: ${e.message}" }
+        false
+    }
+}
+
+actual fun createBondClassic(identifier: PebbleBtClassicIdentifier): Boolean {
+    // Device1.Pair() over the BR/EDR device object (created by the Classic scanner). The pairing agent
+    // auto-confirms the Numeric-Comparison passkey host-side; the user confirms the matching code ON THE
+    // WATCH. Blocks until bonded or the BlueZ pairing timeout. NB: on a dual-mode device this may pair
+    // LE (CTKD) rather than BR/EDR — if so the RFCOMM connect fails and a manual `btmgmt pair -t bredr`
+    // is the fallback. Pairing a device discovered via the bredr inquiry filter does a BR/EDR bond.
+    return try {
+        val conn = DBusConnectionBuilder.forSystemBus().withShared(false).build()
+        try {
+            val path = findClassicDevicePath(conn, identifier.macAddress) ?: run {
+                log.w { "createBondClassic: device ${identifier.macAddress} not found (scan/discover it first)" }
+                return false
+            }
+            log.i { "createBondClassic: pairing ${identifier.macAddress} — confirm the code ON THE WATCH" }
+            conn.getRemoteObject("org.bluez", path, ClassicDevice1::class.java).Pair()
+            log.i { "createBondClassic: paired ${identifier.macAddress}" }
+            true
+        } finally {
+            conn.disconnect()
+        }
+    } catch (e: Exception) {
+        val m = e.message ?: ""
+        if (m.contains("AlreadyExists")) return true
+        log.w { "createBondClassic(${identifier.macAddress}) failed: $m" }
+        false
+    }
+}
+
 actual fun getBluetoothClassicDevicePairEvents(
     context: AppContext,
     identifier: PebbleBtClassicIdentifier,

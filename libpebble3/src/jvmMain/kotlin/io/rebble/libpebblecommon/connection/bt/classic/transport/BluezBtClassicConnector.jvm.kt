@@ -7,6 +7,8 @@ import io.rebble.libpebblecommon.connection.PebbleBtClassicIdentifier
 import io.rebble.libpebblecommon.connection.PebbleProtocolStreams
 import io.rebble.libpebblecommon.connection.bt.classic.pebble.BtClassicConnector
 import io.rebble.libpebblecommon.connection.bt.classic.pebble.ClassicConnectionResult
+import io.rebble.libpebblecommon.connection.bt.createBondClassic
+import io.rebble.libpebblecommon.connection.bt.isBondedClassic
 import io.rebble.libpebblecommon.di.ConnectionCoroutineScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
@@ -21,9 +23,8 @@ import kotlinx.coroutines.withContext
  * straight into the Pebble protocol layer (no PPoGATT wrapper — over Classic the RFCOMM stream *is*
  * the Pebble protocol transport).
  *
- * MVP: assumes the watch is already BR/EDR-bonded (a persistent [LinkKey]; pair it once with
- * `btmgmt pair -t bredr`). Auto-pairing/SDP-channel-discovery are deliberately left for a follow-up;
- * the RFCOMM channel comes from [PebbleBtClassicIdentifier.rfcommChannel].
+ * Auto-pairs if the watch isn't BR/EDR-bonded (the agent auto-confirms host-side; user taps the watch)
+ * and resolves the SPP RFCOMM channel via SDP, falling back to [PebbleBtClassicIdentifier.rfcommChannel].
  */
 class BluezBtClassicConnector(
     private val identifier: PebbleBtClassicIdentifier,
@@ -37,13 +38,42 @@ class BluezBtClassicConnector(
     @Volatile private var socket: BluezRfcommSocket? = null
 
     override suspend fun connect(): ClassicConnectionResult {
-        logger.i { "connect() RFCOMM to ${identifier.macAddress} channel ${identifier.rfcommChannel}" }
-        val sock = try {
-            withContext(Dispatchers.IO) {
-                BluezRfcommSocket.connect(identifier.macAddress, identifier.rfcommChannel)
+        // Auto-pair if needed (BR/EDR SSP; agent auto-confirms host-side, user confirms on the watch).
+        if (!withContext(Dispatchers.IO) { isBondedClassic(identifier) }) {
+            logger.i { "not BR/EDR-bonded — pairing ${identifier.macAddress} (confirm the code on the watch)" }
+            val paired = withContext(Dispatchers.IO) { createBondClassic(identifier) }
+            if (!paired) {
+                logger.w { "BR/EDR pairing failed" }
+                if (!_disconnected.isCompleted) _disconnected.complete(ConnectionFailureReason.ClassicConnectionFailed)
+                return ClassicConnectionResult.Failure
             }
+        }
+
+        // Resolve the SPP RFCOMM channel via SDP; fall back to the configured/identifier channel.
+        val sdpChannel = withContext(Dispatchers.IO) { resolveSppChannel(identifier.macAddress) }
+        val primary = sdpChannel ?: identifier.rfcommChannel
+        logger.i {
+            "connect() RFCOMM to ${identifier.macAddress} channel $primary " +
+                (if (sdpChannel != null) "(SDP-resolved)" else "(fallback)")
+        }
+        var sock = try {
+            withContext(Dispatchers.IO) { BluezRfcommSocket.connect(identifier.macAddress, primary) }
         } catch (e: Exception) {
-            logger.w(e) { "RFCOMM connect failed (is the watch BR/EDR-bonded and in range?)" }
+            logger.w { "RFCOMM connect on channel $primary failed: ${e.message}" }
+            null
+        }
+        // If the SDP-resolved channel failed, try the configured fallback channel once.
+        if (sock == null && primary != identifier.rfcommChannel) {
+            logger.i { "retrying RFCOMM on fallback channel ${identifier.rfcommChannel}" }
+            sock = try {
+                withContext(Dispatchers.IO) { BluezRfcommSocket.connect(identifier.macAddress, identifier.rfcommChannel) }
+            } catch (e: Exception) {
+                logger.w { "RFCOMM connect on fallback channel failed: ${e.message}" }
+                null
+            }
+        }
+        if (sock == null) {
+            logger.w { "RFCOMM connect failed (is the watch BR/EDR-bonded and in range?)" }
             if (!_disconnected.isCompleted) _disconnected.complete(ConnectionFailureReason.ClassicConnectionFailed)
             return ClassicConnectionResult.Failure
         }
