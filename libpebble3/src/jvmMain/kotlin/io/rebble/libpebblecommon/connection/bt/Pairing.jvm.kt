@@ -24,10 +24,6 @@ import org.freedesktop.dbus.types.Variant
 
 private val log = Logger.withTag("PairingJvm")
 
-// Extracts /org/bluez/hci0/dev_XX_XX... from {"object_path":"/org/bluez/..."}
-private fun PebbleBleIdentifier.bluezObjectPath(): String? =
-    Regex(""""object_path"\s*:\s*"([^"]+)"""").find(asString)?.groupValues?.get(1)
-
 actual fun isBonded(identifier: PebbleBleIdentifier): Boolean {
     val objectPath = identifier.bluezObjectPath() ?: return false
     return try {

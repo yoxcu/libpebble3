@@ -38,6 +38,14 @@ data class PebbleScanResult(
     val leScanRecord: PebbleLeScanRecord?,
 )
 
+/**
+ * Dual-mode (classic-capable) Pebbles advertise a "Pebble … LE …" BLE bridge name; BLE-native
+ * watches (Pebble 2 / Time 2) do not. Used to route classic-capable watches to the Classic transport.
+ */
+internal fun isDualModeClassicBridgeName(name: String): Boolean =
+    name.startsWith("Pebble", ignoreCase = true) &&
+        Regex("""\bLE\b""", RegexOption.IGNORE_CASE).containsMatchIn(name)
+
 class RealScanning(
     private val watchConnector: WatchConnector,
     private val bleScanner: BleScanner,
@@ -153,9 +161,7 @@ class RealScanning(
     private fun shouldHideLegacyClassicWatch(record: PebbleLeScanRecord, name: String): Boolean {
         if (!blePlatformConfig.supportsBtClassic) return false
         if (watchConfig.value.allowLegacyWatchesInBleScan) return false
-        if (name.startsWith("Pebble", ignoreCase = true) &&
-            Regex("""\bLE\b""", RegexOption.IGNORE_CASE).containsMatchIn(name)
-        ) return true
+        if (isDualModeClassicBridgeName(name)) return true
         val hardwarePlatform = record.extendedInfo?.hardwarePlatform ?: return false
         val watchType = WatchHardwarePlatform.fromProtocolNumber(hardwarePlatform.toUByte()).watchType
         return watchType.supportsBtClassic()

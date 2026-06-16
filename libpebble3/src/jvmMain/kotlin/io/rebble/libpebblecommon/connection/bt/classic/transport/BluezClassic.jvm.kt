@@ -3,6 +3,10 @@ package io.rebble.libpebblecommon.connection.bt.classic.transport
 import co.touchlab.kermit.Logger
 import io.rebble.libpebblecommon.connection.PebbleBtClassicIdentifier
 import io.rebble.libpebblecommon.connection.PebbleScanResult
+import io.rebble.libpebblecommon.connection.bt.BLUEZ_ADAPTER1
+import io.rebble.libpebblecommon.connection.bt.BLUEZ_DEVICE1
+import io.rebble.libpebblecommon.connection.bt.ORG_BLUEZ
+import io.rebble.libpebblecommon.connection.bt.unwrapVariant
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
@@ -19,10 +23,6 @@ import org.freedesktop.dbus.types.Variant
 
 private val clog = Logger.withTag("BluezClassic")
 
-private const val ORG_BLUEZ = "org.bluez"
-internal const val CLASSIC_ADAPTER1 = "org.bluez.Adapter1"
-internal const val CLASSIC_DEVICE1 = "org.bluez.Device1"
-
 @DBusInterfaceName("org.bluez.Adapter1")
 internal interface ClassicAdapter1 : DBusInterface {
     fun StartDiscovery()
@@ -36,8 +36,6 @@ internal interface ClassicDevice1 : DBusInterface {
     fun Connect()
     fun Disconnect()
 }
-
-internal fun unwrapV(value: Any?): Any? = if (value is Variant<*>) value.value else value
 
 private fun macToPathSuffix(mac: String) = "dev_" + mac.trim().uppercase().replace(":", "_")
 
@@ -59,7 +57,7 @@ internal fun findClassicAdapterPath(conn: DBusConnection): String? = try {
     conn.getRemoteObject(ORG_BLUEZ, "/", ObjectManager::class.java)
         .GetManagedObjects().entries
         .firstOrNull { (path, ifaces) ->
-            Regex("/org/bluez/hci\\d+$").matches(path.toString()) && CLASSIC_ADAPTER1 in ifaces
+            Regex("/org/bluez/hci\\d+$").matches(path.toString()) && BLUEZ_ADAPTER1 in ifaces
         }?.key?.toString()
 } catch (e: Exception) {
     clog.w { "findClassicAdapterPath failed: ${e.message}" }
@@ -107,19 +105,19 @@ class BluezClassicScanner : ClassicScanner {
                 try {
                     var matched = 0
                     objMgr.GetManagedObjects().forEach { (p, ifaces) ->
-                        val dp = ifaces[CLASSIC_DEVICE1] ?: return@forEach
+                        val dp = ifaces[BLUEZ_DEVICE1] ?: return@forEach
                         // CRITICAL: GetManagedObjects returns ALL devices, including BLE ones surfaced by
                         // a concurrent LE scan. Only a real BR/EDR device has a Class of Device — require
                         // it, so a BLE-native watch (Time 2 / Pebble 2) is never misclassified as Classic.
-                        if (unwrapV(dp["Class"]) == null) return@forEach
-                        val name = (unwrapV(dp["Name"]) as? String)
-                            ?: (unwrapV(dp["Alias"]) as? String) ?: ""
-                        val addr = (unwrapV(dp["Address"]) as? String) ?: return@forEach
+                        if (unwrapVariant(dp["Class"]) == null) return@forEach
+                        val name = (unwrapVariant(dp["Name"]) as? String)
+                            ?: (unwrapVariant(dp["Alias"]) as? String) ?: ""
+                        val addr = (unwrapVariant(dp["Address"]) as? String) ?: return@forEach
                         // Classic-era Pebble: a BR/EDR device named "Pebble …" (e.g. "Pebble Time 1E81").
                         // Exclude the "Pebble Time LE …" BLE bridge name defensively.
                         if (!name.startsWith("Pebble", ignoreCase = true)) return@forEach
                         if (name.contains(" LE ", ignoreCase = true)) return@forEach
-                        val rssi = (unwrapV(dp["RSSI"]) as? Number)?.toInt() ?: 0
+                        val rssi = (unwrapVariant(dp["RSSI"]) as? Number)?.toInt() ?: 0
                         matched++
                         trySend(
                             PebbleScanResult(
