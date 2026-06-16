@@ -103,7 +103,9 @@ class PPoGTest {
                 ppog = PPoG(ppStreams, ppogStreams, sender, bleConfigFlow, blePlatformConfig, scope)
                 ppog.run(false)
                 init(sendResetComplete = false)
-                testScheduler.advanceTimeBy(30.seconds)
+                // stoandl raised the PPoG init timeout 12s→30s (commit 4375b8c7); advance past the
+                // full 30s phase-1 + 5s fallback window so the handshake timeout actually fires.
+                testScheduler.advanceTimeBy(40.seconds)
             }
         }
     }
