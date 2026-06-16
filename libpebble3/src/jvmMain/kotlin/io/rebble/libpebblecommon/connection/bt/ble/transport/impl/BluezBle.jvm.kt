@@ -5,6 +5,11 @@ import com.juul.kable.ManufacturerData
 import io.rebble.libpebblecommon.connection.BleScanResult
 import io.rebble.libpebblecommon.connection.ConnectionFailureReason
 import io.rebble.libpebblecommon.connection.PebbleBleIdentifier
+import io.rebble.libpebblecommon.connection.bt.BLUEZ_ADAPTER1
+import io.rebble.libpebblecommon.connection.bt.BLUEZ_DEVICE1
+import io.rebble.libpebblecommon.connection.bt.ORG_BLUEZ
+import io.rebble.libpebblecommon.connection.bt.bluezObjectPath
+import io.rebble.libpebblecommon.connection.bt.unwrapVariant
 import io.rebble.libpebblecommon.connection.bt.ble.transport.BleScanner
 import io.rebble.libpebblecommon.connection.bt.ble.transport.ConnectedGattClient
 import io.rebble.libpebblecommon.connection.bt.ble.transport.GattCharacteristic
@@ -45,9 +50,6 @@ private val log = Logger.withTag("BluezBle")
 // than one manufacturer-data entry; prefer one of these so the downstream vendor filter keeps it.
 private val PEBBLE_VENDOR_IDS = setOf(0x0154, 0x0EEA)
 
-private const val ORG_BLUEZ = "org.bluez"
-private const val ADAPTER1 = "org.bluez.Adapter1"
-private const val DEVICE1 = "org.bluez.Device1"
 private const val GATT_SERVICE1 = "org.bluez.GattService1"
 private const val GATT_CHARACTERISTIC1 = "org.bluez.GattCharacteristic1"
 private const val DBUS_PROPERTIES = "org.freedesktop.DBus.Properties"
@@ -76,8 +78,6 @@ private interface BluezGattCharacteristic1Client : DBusInterface {
     fun StopNotify()
 }
 
-private fun unwrap(value: Any?): Any? = if (value is Variant<*>) value.value else value
-
 /**
  * Coerce a D-Bus `ay` value to a ByteArray. When a byte array is nested inside a Variant (e.g.
  * ManufacturerData `a{qv}` or a characteristic's Value), dbus-java may deliver it as boxed `Byte[]`
@@ -90,10 +90,6 @@ private fun asByteArray(value: Any?): ByteArray? = when (value) {
     else -> null
 }
 
-/** {"object_path":"/org/bluez/hci0/dev_XX..."} → /org/bluez/hci0/dev_XX...  (same format Pairing.jvm.kt parses). */
-private fun PebbleBleIdentifier.bluezObjectPath(): String? =
-    Regex(""""object_path"\s*:\s*"([^"]+)"""").find(asString)?.groupValues?.get(1)
-
 /** Build the identifier asString in the btleplug PeripheralId format so isBonded()/pairing keep working. */
 private fun objectPathToAsString(path: String): String = """{"object_path":"$path"}"""
 
@@ -102,7 +98,7 @@ private fun isHciAdapter(path: String) = Regex("/org/bluez/hci\\d+$").matches(pa
 private fun findAdapterPath(conn: DBusConnection): String? = try {
     val objMgr = conn.getRemoteObject(ORG_BLUEZ, "/", ObjectManager::class.java)
     objMgr.GetManagedObjects().entries
-        .firstOrNull { (path, ifaces) -> isHciAdapter(path.toString()) && ADAPTER1 in ifaces }
+        .firstOrNull { (path, ifaces) -> isHciAdapter(path.toString()) && BLUEZ_ADAPTER1 in ifaces }
         ?.key?.toString()
 } catch (e: Exception) {
     log.w(e) { "findAdapterPath failed" }
@@ -142,19 +138,19 @@ class BluezBleScanner : BleScanner {
 
         fun emitDevice(devicePath: String, deviceProps: Map<String, Variant<*>>): Boolean {
             return try {
-                val mdRaw = unwrap(deviceProps["ManufacturerData"]) as? Map<*, *> ?: return false
+                val mdRaw = unwrapVariant(deviceProps["ManufacturerData"]) as? Map<*, *> ?: return false
                 var match: Pair<Int, ByteArray>? = null
                 for ((k, v) in mdRaw) {
                     val code = (k as? Number)?.toInt() ?: continue
                     if (code !in PEBBLE_VENDOR_IDS) continue
-                    val bytes = asByteArray(unwrap(v)) ?: continue
+                    val bytes = asByteArray(unwrapVariant(v)) ?: continue
                     match = code to bytes
                     break
                 }
                 val (code, bytes) = match ?: return false
-                val name = (unwrap(deviceProps["Name"]) as? String)
-                    ?: (unwrap(deviceProps["Alias"]) as? String) ?: ""
-                val rssi = (unwrap(deviceProps["RSSI"]) as? Number)?.toInt() ?: 0
+                val name = (unwrapVariant(deviceProps["Name"]) as? String)
+                    ?: (unwrapVariant(deviceProps["Alias"]) as? String) ?: ""
+                val rssi = (unwrapVariant(deviceProps["RSSI"]) as? Number)?.toInt() ?: 0
                 // asString carries the BlueZ object path (used by isBonded/pairing/the connector).
                 // No kableIdentifier: the JVM/BlueZ path never builds a kable peripheral (btleplug's
                 // native lib can't load on musl).
@@ -189,15 +185,15 @@ class BluezBleScanner : BleScanner {
                     var matched = 0
                     val withMfd = StringBuilder()
                     managed.forEach { (p, ifaces) ->
-                        val dp = ifaces[DEVICE1] ?: return@forEach
+                        val dp = ifaces[BLUEZ_DEVICE1] ?: return@forEach
                         total++
                         if (!loggedSummary) {
-                            val md = unwrap(dp["ManufacturerData"]) as? Map<*, *>
+                            val md = unwrapVariant(dp["ManufacturerData"]) as? Map<*, *>
                             if (md != null) {
                                 val codes = md.keys.mapNotNull { (it as? Number)?.toInt() }
                                     .joinToString(",") { "0x%04x".format(it) }
-                                val nm = (unwrap(dp["Name"]) as? String)
-                                    ?: (unwrap(dp["Alias"]) as? String) ?: "?"
+                                val nm = (unwrapVariant(dp["Name"]) as? String)
+                                    ?: (unwrapVariant(dp["Alias"]) as? String) ?: "?"
                                 withMfd.append(" [$nm mfd=$codes]")
                             }
                         }
@@ -273,12 +269,12 @@ class BluezGattConnector(
         lifecycleHandle = c.addGenericSigHandler(rule) { msg: DBusSignal ->
             try {
                 val params = msg.getParameters() ?: return@addGenericSigHandler
-                if (params.size < 2 || params[0] != DEVICE1) return@addGenericSigHandler
+                if (params.size < 2 || params[0] != BLUEZ_DEVICE1) return@addGenericSigHandler
                 val changed = params[1] as? Map<*, *> ?: return@addGenericSigHandler
-                (unwrap(changed["ServicesResolved"]) as? Boolean)?.let {
+                (unwrapVariant(changed["ServicesResolved"]) as? Boolean)?.let {
                     if (it) { linkUp.set(true); resolved.complete(true) }
                 }
-                (unwrap(changed["Connected"]) as? Boolean)?.let {
+                (unwrapVariant(changed["Connected"]) as? Boolean)?.let {
                     if (!it && linkUp.get()) {
                         logger.i { "device reported Connected=false (link dropped${reasonSuffix(lastDropReason)})" }
                         if (!_disconnected.isCompleted) _disconnected.complete(ConnectionFailureReason.FailedToConnect)
@@ -296,7 +292,7 @@ class BluezGattConnector(
         // simply omits the reason. (The churn detector in PebbleIntegration keys broken-bond
         // detection off this same signal — this is purely for diagnosability.)
         val reasonRule = DBusMatchRuleBuilder.create()
-            .withType("signal").withInterface(DEVICE1)
+            .withType("signal").withInterface(BLUEZ_DEVICE1)
             .withMember("Disconnected").withPath(path).build()
         reasonHandle = c.addGenericSigHandler(reasonRule) { msg: DBusSignal ->
             try {
@@ -308,7 +304,7 @@ class BluezGattConnector(
 
         // Trust the bonded device so bluetoothd keeps it in the kernel background-connect (accept-list)
         // set and reconnects it the instant it advertises — no app-side polling. Harmless if unbonded.
-        try { props.Set(DEVICE1, "Trusted", Variant(true, "b")) } catch (e: Exception) {
+        try { props.Set(BLUEZ_DEVICE1, "Trusted", Variant(true, "b")) } catch (e: Exception) {
             logger.d { "could not set Trusted: ${e.message}" }
         }
 
@@ -415,7 +411,7 @@ class BluezGattConnector(
     }
 
     private fun readBool(props: Properties, name: String): Boolean = try {
-        (unwrap(props.Get<Any>(DEVICE1, name)) as? Boolean) ?: false
+        (unwrapVariant(props.Get<Any>(BLUEZ_DEVICE1, name)) as? Boolean) ?: false
     } catch (_: Exception) { false }
 
     // Render a BlueZ disconnect reason as a short, log-friendly suffix. Strips the "org.bluez.Reason."
@@ -497,7 +493,7 @@ private class BluezConnectedGattClient(
                     val ps = p.toString()
                     if (!ps.startsWith(prefix)) return@forEach
                     val svc = ifaces[GATT_SERVICE1] ?: return@forEach
-                    val uuid = (unwrap(svc["UUID"]) as? String)?.let { runCatching { Uuid.parse(it) }.getOrNull() }
+                    val uuid = (unwrapVariant(svc["UUID"]) as? String)?.let { runCatching { Uuid.parse(it) }.getOrNull() }
                     if (uuid != null) serviceUuidByPath[ps] = uuid
                 }
                 val charsByService = HashMap<Uuid, MutableList<GattCharacteristic>>()
@@ -505,11 +501,11 @@ private class BluezConnectedGattClient(
                     val ps = p.toString()
                     if (!ps.startsWith(prefix)) return@forEach
                     val ch = ifaces[GATT_CHARACTERISTIC1] ?: return@forEach
-                    val charUuid = (unwrap(ch["UUID"]) as? String)?.let { runCatching { Uuid.parse(it) }.getOrNull() }
+                    val charUuid = (unwrapVariant(ch["UUID"]) as? String)?.let { runCatching { Uuid.parse(it) }.getOrNull() }
                         ?: return@forEach
-                    val svcPath = unwrap(ch["Service"])?.toString() ?: return@forEach
+                    val svcPath = unwrapVariant(ch["Service"])?.toString() ?: return@forEach
                     val svcUuid = serviceUuidByPath[svcPath] ?: return@forEach
-                    val flags = when (val f = unwrap(ch["Flags"])) {
+                    val flags = when (val f = unwrapVariant(ch["Flags"])) {
                         is Array<*> -> f.filterIsInstance<String>()
                         is List<*> -> f.filterIsInstance<String>()
                         else -> emptyList()
@@ -561,7 +557,7 @@ private class BluezConnectedGattClient(
                     val params = msg.getParameters() ?: return@addGenericSigHandler
                     if (params.size < 2 || params[0] != GATT_CHARACTERISTIC1) return@addGenericSigHandler
                     val changed = params[1] as? Map<*, *> ?: return@addGenericSigHandler
-                    val bytes = asByteArray(unwrap(changed["Value"])) ?: return@addGenericSigHandler
+                    val bytes = asByteArray(unwrapVariant(changed["Value"])) ?: return@addGenericSigHandler
                     trySend(bytes)
                 } catch (e: Exception) {
                     logger.v(e) { "notify handler error" }
@@ -622,7 +618,7 @@ private class BluezConnectedGattClient(
         for (path in charPaths.values) {
             try {
                 val props = conn.getRemoteObject(ORG_BLUEZ, path, Properties::class.java)
-                val mtu = (unwrap(props.Get<Any>(GATT_CHARACTERISTIC1, "MTU")) as? Number)?.toInt()
+                val mtu = (unwrapVariant(props.Get<Any>(GATT_CHARACTERISTIC1, "MTU")) as? Number)?.toInt()
                 if (mtu != null && mtu > 0) return mtu
             } catch (_: Exception) {}
         }

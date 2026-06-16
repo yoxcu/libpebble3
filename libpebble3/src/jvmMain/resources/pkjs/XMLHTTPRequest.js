@@ -1,4 +1,4 @@
-// ES6-compatible XMLHttpRequest shim for Rhino (no class fields, no Uint8Array.fromBase64)
+// XMLHttpRequest shim for GraalJS (uses a custom _xhrDecodeBase64 since GraalJS lacks Uint8Array.fromBase64)
 
 function XMLHttpRequest() {
     this.readyState = XMLHttpRequest.UNSENT;
