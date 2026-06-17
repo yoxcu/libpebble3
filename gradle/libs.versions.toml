@@ -4,6 +4,10 @@ android-minSdk = "26"
 android-targetSdk = "35"
 agp = "8.13.2"
 kotlin = "2.3.10"
+# Stays 21: this drives :blobdbgen (a KSP symbol processor that must be loadable by the Gradle
+# daemon / KSP worker JVM, which is JDK 21 — Gradle 8.14 can't run on 25) and the Android
+# compileOptions. Only libpebble3's *jvm target* needs JDK 25 (java.lang.foreign), and it pins
+# jvmToolchain(25) directly — see libpebble3/build.gradle.kts.
 jvm-toolchain = "21"
 ktor = "3.4.0"
 coroutine = "1.10.2"
