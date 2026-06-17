@@ -41,7 +41,15 @@ room {
 val enableIosTarget = System.getProperty("os.name").contains("mac", ignoreCase = true)
 
 kotlin {
-    jvmToolchain(libs.versions.jvm.toolchain.get().toInt())
+    // Compile this module *against* a JDK 25 toolchain (auto-detected; the Gradle 8.14 daemon stays
+    // on JDK 21). The BT Classic RFCOMM socket (BluezRfcommSocket.jvm.kt, jvmMain) uses
+    // java.lang.foreign, only on the bootclasspath from JDK 22 on — without a JDK 25 jdkHome the
+    // daemon's JDK 21 is used and the FFM API won't resolve. Pinned to a literal 25, NOT the
+    // `jvm-toolchain` catalog value (21): that value drives :blobdbgen, a KSP processor the JDK-21
+    // KSP worker must load, so it has to stay 21.
+    //
+    // The emitted bytecode is still JDK 21 (jvmTarget below), NOT 25 — see the jvm{} block.
+    jvmToolchain(25)
 
     targets.configureEach {
         compilations.configureEach {
@@ -83,7 +91,19 @@ kotlin {
         }
     }
 
-    jvm()
+    jvm {
+        compilerOptions {
+            // Emit JDK 21 bytecode (major 65) even though we compile on the JDK 25 toolchain above.
+            // KSP (and the kotlinx-atomicfu post-compile transform, whenever gradle.properties doesn't
+            // set kotlinx.atomicfu.enableJvmIrTransformation=true) run in the Gradle daemon JVM
+            // (JDK 21) and load these classes reflectively — major-69 (JDK 25) bytecode throws
+            // UnsupportedClassVersionError there. major-65 loads fine for those tools, runs fine on
+            // the JDK 25 runtime, and the java.lang.foreign calls still resolve against JDK 25 at
+            // run time (a JDK 25 runtime is required regardless — see packaging/). jdkHome (25, for
+            // the FFM API at compile time) and jvmTarget (21, the bytecode level) are independent.
+            jvmTarget.set(JvmTarget.JVM_21)
+        }
+    }
 
     listOf(
         iosArm64(),
@@ -162,10 +182,8 @@ kotlin {
         jvmMain.dependencies {
             implementation("com.github.hypfvieh:dbus-java-core:5.2.0")
             implementation("com.github.hypfvieh:dbus-java-transport-native-unixsocket:5.2.0")
-            // AF_BLUETOOTH RFCOMM socket for the BT Classic transport (JVM has no native BT sockets).
-            implementation("net.java.dev.jna:jna:5.14.0")
-            implementation("org.graalvm.polyglot:polyglot:24.2.1")
-            implementation("org.graalvm.polyglot:js-community:24.2.1")
+            implementation("org.graalvm.polyglot:polyglot:25.0.3")
+            implementation("org.graalvm.polyglot:js-community:25.0.3")
         }
 
         jvmTest.dependencies {
