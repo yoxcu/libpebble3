@@ -216,7 +216,13 @@ class BluezBleScanner : BleScanner {
 
         awaitClose {
             poller.cancel()
-            try { adapter.StopDiscovery() } catch (_: Exception) {}
+            // Log (don't swallow) a StopDiscovery failure: because sharedConn is process-lifetime and
+            // never closed, a failed stop leaves the discovery session HELD on it — Adapter1.Discovering
+            // stays true while we believe we stopped scanning, which reads as an external scanner
+            // blocking reconnection. Surfacing it turns that silent leak into a visible log line.
+            try { adapter.StopDiscovery() } catch (e: Exception) {
+                log.w { "BluezBleScanner: StopDiscovery failed; discovery may remain active: ${e.message}" }
+            }
             // Intentionally do NOT disconnect the shared connection — see companion note. Keeping it
             // open preserves the temporary device objects so the connector can reach them.
         }
