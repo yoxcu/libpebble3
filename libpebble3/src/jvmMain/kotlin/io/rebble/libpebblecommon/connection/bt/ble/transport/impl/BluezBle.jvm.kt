@@ -41,6 +41,7 @@ import org.freedesktop.dbus.matchrules.DBusMatchRuleBuilder
 import org.freedesktop.dbus.messages.DBusSignal
 import org.freedesktop.dbus.types.Variant
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
 
@@ -315,7 +316,7 @@ class BluezGattConnector(
         }
 
         attempted = true
-        if (readBool(props, "ServicesResolved")) resolved.complete(true)
+        if (readBool(props, "ServicesResolved")) { linkUp.set(true); resolved.complete(true) }
 
         // Tear down this connector (both signal handlers AND the DBusConnection) exactly once when the
         // connection ends. On a successful connect close() is never reached via the finally below
@@ -377,6 +378,7 @@ class BluezGattConnector(
                     if (resolved.await()) {
                         logger.i { "connected and services resolved" }
                         succeeded = true
+                        scope.launch(Dispatchers.IO) { reconcileConnectedState(props, linkUp) }
                         return GattConnectionResult.Success(BluezConnectedGattClient(identifier, c, path))
                     }
                     val reason = if (_disconnected.isCompleted) ConnectionFailureReason.FailedToConnect
@@ -419,6 +421,25 @@ class BluezGattConnector(
     private fun readBool(props: Properties, name: String): Boolean = try {
         (unwrapVariant(props.Get<Any>(BLUEZ_DEVICE1, name)) as? Boolean) ?: false
     } catch (_: Exception) { false }
+
+    // Safety net for the signal-driven path above: periodically re-read BlueZ's own Connected
+    // property directly (not the cached PropertiesChanged state) and reconcile if it disagrees
+    // with what we believe. Only ever fires _disconnected when BlueZ ITSELF reports the device
+    // gone, so it can't false-positive on a healthy connection that's simply been up for a long
+    // time — it's a backstop against a missed/raced PropertiesChanged signal (e.g. the
+    // ServicesResolved fast-path above completing on a stale read without a matching Connected
+    // edge ever arriving), not a liveness timeout.
+    private suspend fun reconcileConnectedState(props: Properties, linkUp: AtomicBoolean) {
+        while (scope.isActive && linkUp.get() && !_disconnected.isCompleted) {
+            delay(RECONCILE_INTERVAL)
+            if (!linkUp.get() || _disconnected.isCompleted) return
+            if (!readBool(props, "Connected")) {
+                logger.w { "reconcile: BlueZ reports Connected=false with no disconnection signalled — forcing disconnect" }
+                if (!_disconnected.isCompleted) _disconnected.complete(ConnectionFailureReason.FailedToConnect)
+                return
+            }
+        }
+    }
 
     // Render a BlueZ disconnect reason as a short, log-friendly suffix. Strips the "org.bluez.Reason."
     // prefix and adds a plain-English hint for the two that matter to the reconnect saga.
@@ -463,6 +484,10 @@ class BluezGattConnector(
         // re-arming — short enough to recover a restart in seconds, long enough to let the watch
         // re-advertise cleanly rather than flapping again on an even faster reconnect.
         private val RETRY_BACKOFF = 5.seconds
+        // How often reconcileConnectedState() re-checks BlueZ's Connected property directly.
+        // Just a backstop against a missed signal, so this can be relaxed; short enough that an
+        // overnight wedge self-heals within one cycle instead of hanging for hours.
+        private val RECONCILE_INTERVAL = 5.minutes
     }
 }
 
