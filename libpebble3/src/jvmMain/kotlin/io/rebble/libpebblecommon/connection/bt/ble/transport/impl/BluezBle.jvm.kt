@@ -341,6 +341,10 @@ class BluezGattConnector(
         // the stale-bond reaper then clears. Cancellation (BT off / requestDisconnection / forget)
         // unwinds via the scope and is cleaned up in the finally.
         var succeeded = false
+        // Arming-phase reconcile bookkeeping (consumed by the block after attempt.cancel() below):
+        // consecutive cycles seen stuck (Connected && !ServicesResolved) / unreadable (null state).
+        var unresolvedCycles = 0
+        var unreadableCycles = 0
         try {
             while (scope.isActive) {
                 val attempt = scope.launch(Dispatchers.IO) {
@@ -374,6 +378,57 @@ class BluezGattConnector(
                     }
                 }
                 attempt.cancel()
+
+                // Reconcile against BlueZ's OWN state each arming cycle. The signal handler above is
+                // edge-triggered, so if the ServicesResolved false->true edge is missed (raced/never
+                // delivered to this long-lived per-attempt connection, Case A) or never emitted (ACL up
+                // but GATT resolution stuck, Case B), `resolved` never completes and the loop would
+                // re-arm Connect() — a no-op "Already Connected" — forever, wedged with the link up.
+                // This is the arming-phase analog of reconcileConnectedState(): trust BlueZ's level, not
+                // just our cached edge.
+                if (!resolved.isCompleted) {
+                    when (val connected = readBoolOrNull(props, "Connected")) {
+                        null -> {
+                            // Our connection can't read the device — likely a dead/deaf socket. After a
+                            // couple of cycles (tolerating a transient hiccup) fail out so the reconnect
+                            // machinery rebuilds the connector on a FRESH DBusConnection, whose entry read
+                            // (readBool ServicesResolved above the loop) re-checks live state cleanly.
+                            // close() only drops our D-Bus client, NOT the BLE link, so the kernel
+                            // accept-list connect intent survives.
+                            if (++unreadableCycles >= UNREADABLE_CYCLES) {
+                                logger.w { "arming: device state unreadable on this connection — rebuilding connector" }
+                                if (!_disconnected.isCompleted) _disconnected.complete(ConnectionFailureReason.FailedToConnect)
+                                return GattConnectionResult.Failure(ConnectionFailureReason.FailedToConnect)
+                            }
+                        }
+                        else -> {
+                            unreadableCycles = 0
+                            if (readBool(props, "ServicesResolved")) {
+                                // A ServicesResolved edge we missed; recover from the level. (Case A.)
+                                linkUp.set(true)
+                                resolved.complete(true)
+                            } else if (connected) {
+                                // ACL up but GATT unresolved — a stuck half-link that re-Connect() can't
+                                // clear (BlueZ answers "Already Connected"). After STUCK_RESOLVE_CYCLES of
+                                // confirmed stuck-state, force ONE Disconnect so the next Connect() re-
+                                // establishes and re-resolves. Safe w.r.t. the "never Disconnect while
+                                // arming" rule, which guards only the Connected==false out-of-range path:
+                                // here the watch is present, so this can't lose an advertising window.
+                                // (Case B — the observed 9h wedge: Connected=true, ServicesResolved=false.)
+                                if (++unresolvedCycles >= STUCK_RESOLVE_CYCLES) {
+                                    logger.i { "connected but services unresolved for $unresolvedCycles cycles — forcing reconnect to re-resolve GATT" }
+                                    try { device.Disconnect() } catch (e: Exception) { logger.d { "stuck-resolve Disconnect failed: ${e.message}" } }
+                                    unresolvedCycles = 0
+                                }
+                            } else {
+                                // Genuinely out of range (Connected=false) — normal arming; keep the
+                                // standing intent, never Disconnect.
+                                unresolvedCycles = 0
+                            }
+                        }
+                    }
+                }
+
                 if (resolved.isCompleted) {
                     if (resolved.await()) {
                         logger.i { "connected and services resolved" }
@@ -421,6 +476,13 @@ class BluezGattConnector(
     private fun readBool(props: Properties, name: String): Boolean = try {
         (unwrapVariant(props.Get<Any>(BLUEZ_DEVICE1, name)) as? Boolean) ?: false
     } catch (_: Exception) { false }
+
+    // Like readBool but returns null when the property can't be read at all (D-Bus call throws/times
+    // out) — i.e. our connection to BlueZ is dead — vs. a genuine false. Used by the arming reconcile
+    // to tell "device is out of range" (Connected reads false) from "our connection is deaf" (null).
+    private fun readBoolOrNull(props: Properties, name: String): Boolean? = try {
+        unwrapVariant(props.Get<Any>(BLUEZ_DEVICE1, name)) as? Boolean
+    } catch (_: Exception) { null }
 
     // Safety net for the signal-driven path above: periodically re-read BlueZ's own Connected
     // property directly (not the cached PropertiesChanged state) and reconcile if it disagrees
@@ -488,6 +550,17 @@ class BluezGattConnector(
         // Just a backstop against a missed signal, so this can be relaxed; short enough that an
         // overnight wedge self-heals within one cycle instead of hanging for hours.
         private val RECONCILE_INTERVAL = 5.minutes
+        // Consecutive arming cycles BlueZ may report Connected=true && ServicesResolved=false before we
+        // force a Disconnect() to re-resolve GATT. Normal resolution completes in <5s; each arming cycle
+        // is paced by RETRY_BACKOFF (~5s) since a Connect() on an already-connected device returns fast,
+        // so ~4 cycles ≈ 20s of confirmed stuck-state — long enough not to interrupt a resolve in
+        // progress, short enough to unstick a wedged half-link quickly. (Case B: ACL up, GATT stuck.)
+        private val STUCK_RESOLVE_CYCLES = 4
+        // Consecutive cycles our own DBusConnection may fail to read the device's state before we fail
+        // out so the reconnect machinery rebuilds the connector on a FRESH connection. Guards the case
+        // where a long-lived per-attempt connection goes deaf (missed edge on a dead socket, Case A)
+        // while tolerating a transient Get() hiccup.
+        private val UNREADABLE_CYCLES = 2
     }
 }
 
