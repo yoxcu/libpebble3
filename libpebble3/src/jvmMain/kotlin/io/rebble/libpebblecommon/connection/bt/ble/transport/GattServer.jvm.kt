@@ -18,9 +18,12 @@ import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
 import org.freedesktop.dbus.interfaces.DBusInterface
 import org.freedesktop.dbus.interfaces.ObjectManager
 import org.freedesktop.dbus.interfaces.Properties
+import org.freedesktop.dbus.matchrules.DBusMatchRuleBuilder
+import org.freedesktop.dbus.messages.DBusSignal
 import org.freedesktop.dbus.types.Variant
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.uuid.Uuid
 
@@ -96,6 +99,13 @@ actual class GattServer {
     // for a fresh StartNotify before PropertiesChanged notifications are delivered.
     private val _notifySubscribed = MutableStateFlow(false)
 
+    // Single-thread worker that re-registers the GATT application with BlueZ after the adapter is
+    // powered off/on. Daemon thread so it never keeps the JVM alive.
+    private val gattAppExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "stoandl-gatt-reregister").apply { isDaemon = true }
+    }
+    @Volatile private var gattManagerWatcherInstalled = false
+
     actual val characteristicReadRequest: Flow<ServerCharacteristicReadRequest> =
         _readRequests.asSharedFlow()
 
@@ -115,9 +125,75 @@ actual class GattServer {
         } catch (e: Exception) {
             log.w { "RegisterApplication failed on $adapterPath (Bluetooth not ready?): $e" }
         }
+        installGattManagerWatcher()
     }
 
+    // BlueZ destroys our registered GATT application whenever the adapter is powered off (host
+    // suspend, rfkill, or a manual BT toggle). The DBus connection and our exported objects survive,
+    // but the RegisterApplication binding is gone. If we don't re-register when the adapter returns,
+    // the watch reconnects at the link layer (BlueZ reports Connected + services resolved) while our
+    // PPoG GATT server no longer exists — it never StartNotify-subscribes or writes RESET_REQUEST, so
+    // PPoG negotiation times out on every reconnect forever ("connected but no notifications") until
+    // the daemon restarts. Re-register when the adapter's GattManager1 reappears.
+    //
+    // libpebble3's generic path for this (GattServerManager closing the server on
+    // BluetoothState.Disabled and re-opening on Enabled) never fires on JVM, because
+    // nativeBluetoothStateFlow() returns null there — so the BlueZ backend self-heals here instead.
+    private fun installGattManagerWatcher() {
+        if (gattManagerWatcherInstalled) return
+        gattManagerWatcherInstalled = true
+        val rule = DBusMatchRuleBuilder.create()
+            .withType("signal")
+            .withInterface("org.freedesktop.DBus.ObjectManager")
+            .withMember("InterfacesAdded")
+            .build()
+        try {
+            conn.addGenericSigHandler(rule) { msg: DBusSignal ->
+                try {
+                    val params = msg.getParameters() ?: return@addGenericSigHandler
+                    if (params.size < 2) return@addGenericSigHandler
+                    if (!isHciAdapterPath(params[0].toString())) return@addGenericSigHandler
+                    val ifaces = params[1] as? Map<*, *> ?: return@addGenericSigHandler
+                    if ("org.bluez.GattManager1" !in ifaces) return@addGenericSigHandler
+                    log.i { "BlueZ adapter powered on — re-registering GATT application" }
+                    gattAppExecutor.execute {
+                        // Let the freshly powered adapter settle before re-binding.
+                        try { Thread.sleep(750) } catch (_: InterruptedException) { return@execute }
+                        reRegisterApplication()
+                    }
+                } catch (e: Exception) {
+                    log.w(e) { "GattManager watcher error: $e" }
+                }
+            }
+        } catch (e: Exception) {
+            log.w(e) { "Failed to install GattManager watcher — GATT server won't self-heal on BT power-cycle: $e" }
+            gattManagerWatcherInstalled = false
+        }
+    }
+
+    private fun reRegisterApplication() {
+        repeat(3) { attempt ->
+            val adapterPath = findGattAdapterPath() ?: "/org/bluez/hci0"
+            try {
+                val gattMgr = conn.getRemoteObject("org.bluez", adapterPath, BluezGattManager1::class.java)
+                // Drop any stale registration first (harmless if none exists), then re-register so
+                // BlueZ rebinds our exported PPoG objects to the freshly powered adapter.
+                try { gattMgr.UnregisterApplication(DBusPath(APP_PATH)) } catch (_: Exception) {}
+                gattMgr.RegisterApplication(DBusPath(APP_PATH), emptyMap())
+                log.i { "BlueZ GATT application re-registered on $adapterPath after adapter power-cycle" }
+                return
+            } catch (e: Exception) {
+                log.w { "GATT re-register attempt ${attempt + 1} failed on $adapterPath: $e" }
+                try { Thread.sleep(1000) } catch (_: InterruptedException) { return }
+            }
+        }
+        log.e { "GATT application re-registration failed after retries — notifications will not flow until BT recovers or the daemon restarts" }
+    }
+
+    private fun isHciAdapterPath(path: String): Boolean = Regex("/org/bluez/hci\\d+$").matches(path)
+
     actual suspend fun closeServer() {
+        gattAppExecutor.shutdownNow()
         val adapterPath = findGattAdapterPath() ?: "/org/bluez/hci0"
         try {
             val gattMgr = conn.getRemoteObject("org.bluez", adapterPath, BluezGattManager1::class.java)
