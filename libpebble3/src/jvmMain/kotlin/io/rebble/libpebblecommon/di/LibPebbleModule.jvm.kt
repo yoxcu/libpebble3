@@ -3,9 +3,7 @@ package io.rebble.libpebblecommon.di
 import androidx.compose.ui.graphics.ImageBitmap
 import io.rebble.libpebblecommon.calls.Call
 import io.rebble.libpebblecommon.calls.LegacyPhoneReceiver
-import io.rebble.libpebblecommon.calendar.CalendarEvent
 import io.rebble.libpebblecommon.calendar.PlatformCalendarActionHandler
-import io.rebble.libpebblecommon.calendar.SystemCalendar
 import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.connection.OtherPebbleApp
 import io.rebble.libpebblecommon.connection.OtherPebbleApps
@@ -20,10 +18,7 @@ import org.koin.dsl.bind
 import io.rebble.libpebblecommon.contacts.SystemContact
 import io.rebble.libpebblecommon.contacts.SystemContacts
 import io.rebble.libpebblecommon.database.entity.BaseAction
-import io.rebble.libpebblecommon.database.entity.CalendarEntity
 import io.rebble.libpebblecommon.database.entity.TimelinePin
-import io.rebble.libpebblecommon.music.PlaybackStatus
-import io.rebble.libpebblecommon.music.SystemMusicControl
 import io.rebble.libpebblecommon.notification.NotificationAppsSync
 import io.rebble.libpebblecommon.packets.PhoneAppVersion
 import io.rebble.libpebblecommon.packets.ProtocolCapsFlag
@@ -33,7 +28,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emptyFlow
-import kotlinx.datetime.Instant
 import org.koin.core.module.Module
 import org.koin.dsl.module
 
@@ -92,33 +86,10 @@ actual val platformModule: Module = module {
         }
     }
 
-    single<SystemMusicControl> {
-        object : SystemMusicControl {
-            override val playbackState: StateFlow<PlaybackStatus?> = MutableStateFlow(null)
-            override fun play() {}
-            override fun pause() {}
-            override fun playPause() {}
-            override fun nextTrack() {}
-            override fun previousTrack() {}
-            override fun volumeUp() {}
-            override fun volumeDown() {}
-        }
-    }
-
-    single<SystemCalendar> {
-        object : SystemCalendar {
-            override suspend fun getCalendars(): List<CalendarEntity> = emptyList()
-            override suspend fun getCalendarEvents(
-                calendar: CalendarEntity,
-                startDate: Instant,
-                endDate: Instant,
-            ): List<CalendarEvent> = emptyList()
-            override suspend fun enableSyncForCalendar(calendar: CalendarEntity) {}
-            override fun registerForCalendarChanges(): Flow<Unit>? = null
-            override fun hasPermission(): Boolean = false
-            override fun supportsPinActions(): Boolean = false
-        }
-    }
+    // NOTE: no JVM no-op SystemMusicControl / SystemCalendar bindings here. The stoandl daemon
+    // overrides both unconditionally (MprisMusicControl / LinuxSystemCalendar), so leaving a silent
+    // no-op would only mask a wiring regression — a missing binding fails fast instead. See the
+    // stoandl fork-nop-ownership convention.
 
     single<LegacyPhoneReceiver> {
         object : LegacyPhoneReceiver {
