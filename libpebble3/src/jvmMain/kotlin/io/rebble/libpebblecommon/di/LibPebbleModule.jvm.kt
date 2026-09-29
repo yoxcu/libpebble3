@@ -19,10 +19,15 @@ import io.rebble.libpebblecommon.contacts.SystemContact
 import io.rebble.libpebblecommon.contacts.SystemContacts
 import io.rebble.libpebblecommon.database.entity.BaseAction
 import io.rebble.libpebblecommon.database.entity.TimelinePin
+import io.rebble.libpebblecommon.imaging.NoNotificationImages
+import io.rebble.libpebblecommon.imaging.NotificationImageProvider
 import io.rebble.libpebblecommon.notification.NotificationAppsSync
 import io.rebble.libpebblecommon.packets.PhoneAppVersion
 import io.rebble.libpebblecommon.packets.ProtocolCapsFlag
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
+import io.rebble.libpebblecommon.plugin.PhoneBatteryMonitor
+import io.rebble.libpebblecommon.plugin.PhoneNetworkMonitor
+import io.rebble.libpebblecommon.plugin.PlatformPlugins
 import io.rebble.libpebblecommon.services.blobdb.TimelineActionResult
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -93,8 +98,24 @@ actual val platformModule: Module = module {
 
     // NOTE: no JVM no-op SystemMusicControl / SystemCalendar bindings here. The stoandl daemon
     // overrides both unconditionally (MprisMusicControl / LinuxSystemCalendar), so leaving a silent
-    // no-op would only mask a wiring regression — a missing binding fails fast instead. See the
-    // stoandl fork-nop-ownership convention.
+    // no-op would only mask a wiring regression — a missing binding fails fast instead. The same
+    // holds for NotificationListenerConnection, PlatformNotificationActionHandler, SystemCallLog and
+    // SystemGeolocation. See the stoandl fork-nop-ownership convention.
+
+    // Plugin hooks commonMain needs on every platform. Upstream's JVM module is a TODO(), so nothing
+    // upstream catches a gap here: without them koin.get<LibPebble>() crashes at startup (see
+    // KoinGraphTest). PhoneStatePlugin reads the phone's battery/radio; the JVM actuals are
+    // upstream's null-emitting stubs. Backing them with UPower/ModemManager would be a feature of
+    // its own, not part of a bump, and is only visible through plugins (enablePlugins, default off).
+    single { PhoneBatteryMonitor() }
+    single { PhoneNetworkMonitor() }
+    // No platform-only plugins on JVM (same as iOS). MusicPlugin is commonMain and could sit on the
+    // daemon's MPRIS SystemMusicControl, but that's a feature of its own, not part of a bump.
+    single { PlatformPlugins(emptySet()) }
+    // No notification images on Linux (yet): registers nothing, so the watch is told the image type
+    // is unsupported and stops asking. PhoneCapabilities above deliberately leaves out
+    // SupportsImageFetch; serving images or album art means overriding both.
+    single<NotificationImageProvider> { NoNotificationImages() }
 
     single<LegacyPhoneReceiver> {
         object : LegacyPhoneReceiver {
