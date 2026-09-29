@@ -48,6 +48,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assume.assumeTrue
 import org.koin.core.annotation.KoinInternalApi
+import org.koin.core.qualifier.named
 import org.koin.dsl.module
 import java.io.File
 import java.lang.reflect.Proxy
@@ -134,18 +135,20 @@ class KoinGraphTest {
         // below. The PKJS JsRunner factory needs per-app parametersOf(...); its injected deps are
         // root singles, so they're covered here.
         val failures = mutableListOf<String>()
-        // ScopeRegistry.rootScopeQualifier is @PublishedApi internal, so go through the root scope.
-        val rootScopeQualifier = koin.scopeRegistry.rootScope.scopeQualifier
+        // Koin has no public API that lists definitions (Module.mappings is @KoinInternalApi too),
+        // so instanceRegistry is the one internal call; the rest is public. ConnectionScope is the
+        // only scope archetype, so everything outside it must resolve from the root. A new archetype
+        // then fails here, naming its scope, instead of going unchecked.
         koin.instanceRegistry.instances.values
             .map { it.beanDefinition }
             .distinct()
-            .filter { it.scopeQualifier == rootScopeQualifier }
+            .filterNot { it.scopeQualifier == named<ConnectionScope>() }
             .filterNot { JsRunner::class.java.isAssignableFrom(it.primaryType.java) }
             .forEach { definition ->
                 try {
                     koin.get<Any>(definition.primaryType, definition.qualifier)
                 } catch (e: Exception) {
-                    failures += "${definition.primaryType.qualifiedName}: $e"
+                    failures += "${definition.primaryType.qualifiedName} (scope ${definition.scopeQualifier.value}): $e"
                 }
             }
         assertTrue(failures.isEmpty(), "Unresolvable Koin definitions:\n" + failures.joinToString("\n"))
