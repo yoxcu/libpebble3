@@ -62,6 +62,11 @@ actual val platformModule: Module = module {
             // watches (e.g. Time Steel) from the BLE scan so they go through the reliable Classic path,
             // while BLE-native watches (Time 2 / Pebble 2) keep using BLE unaffected.
             supportsBtClassic = true,
+            // BlueZ: the watch reads META and writes RESET_REQUEST to our GATT server seconds before
+            // ServicesResolved, so register the forward-PPoG device (and publish the PPoG service)
+            // before connecting. GattServer.initServer() registers nothing on JVM, so this is the
+            // only thing that puts the service up before the link.
+            registerForwardPpogBeforeConnect = true,
         )
     }
 

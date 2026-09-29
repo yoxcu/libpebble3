@@ -116,6 +116,10 @@ actual class GattServer {
         log.d { "BlueZ GATT objects exported at $APP_PATH" }
     }
 
+    // Called by GattServerManager on the first registerDevice(). On JVM that call comes from
+    // PebbleBle BEFORE it connects (BlePlatformConfig.registerForwardPpogBeforeConnect), so the PPoG
+    // service is published before the link comes up and never mid-connection, and the device is
+    // already registered when the watch starts writing.
     actual suspend fun addServices() {
         val adapterPath = findGattAdapterPath() ?: "/org/bluez/hci0"
         try {
@@ -192,6 +196,10 @@ actual class GattServer {
 
     private fun isHciAdapterPath(path: String): Boolean = Regex("/org/bluez/hci\\d+$").matches(path)
 
+    // Deliberately a no-op. GattServerManager never removes services while the server is open (its
+    // unregisterDevice() removal is commented out upstream: "the churn seems to be breaking
+    // connectivity"), and on BlueZ an UnregisterApplication/RegisterApplication cycle mid-session is
+    // exactly what broke the PPoG handshake before. closeServer() still unregisters on teardown.
     actual suspend fun removeServices() {
     }
 

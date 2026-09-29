@@ -7,6 +7,7 @@ import io.rebble.libpebblecommon.connection.KnownWatchProperties
 import io.rebble.libpebblecommon.connection.PebbleBleIdentifier
 import io.rebble.libpebblecommon.connection.PebbleConnectionResult
 import io.rebble.libpebblecommon.connection.TransportConnector
+import io.rebble.libpebblecommon.connection.bt.ble.BlePlatformConfig
 import io.rebble.libpebblecommon.connection.bt.ble.pebble.LEConstants.TARGET_MTU
 import io.rebble.libpebblecommon.connection.bt.ble.pebble.LEConstants.UUIDs.PPOGATT_DEVICE_CHARACTERISTIC_READ
 import io.rebble.libpebblecommon.connection.bt.ble.pebble.LEConstants.UUIDs.PPOGATT_DEVICE_SERVICE_UUID_CLIENT
@@ -42,10 +43,23 @@ class PebbleBle(
     private val batteryWatcher: BatteryWatcher,
     private val preConnectScanner: PreConnectScanner,
     private val libPebbleConfigFlow: LibPebbleConfigFlow,
+    private val blePlatformConfig: BlePlatformConfig,
 ) : TransportConnector {
     private val logger = Logger.withTag("PebbleBle/${identifier.asString}")
 
     override suspend fun connect(knownWatchProperties: KnownWatchProperties?, lastError: ConnectionFailureReason?): PebbleConnectionResult {
+        val bleConfig = libPebbleConfigFlow.value.bleConfig
+        val forwardOnly = !bleConfig.useReversedPpogV2
+        // With reversed PPoG disabled the transport is forward whatever the watch advertises, so
+        // platforms that need it register with our GATT server (which also publishes the PPoG
+        // service on first use) BEFORE connecting. The watch can start forward PPoG (META read,
+        // then RESET_REQUEST) before connect() returns (on BlueZ, seconds before
+        // ServicesResolved), and the GATT server drops writes from a device not yet registered.
+        val earlyForward = forwardOnly && blePlatformConfig.registerForwardPpogBeforeConnect
+        if (earlyForward && !gattServerManager.registerDevice(identifier, pPoGStream.inboundPPoGBytesChannel)) {
+            return PebbleConnectionResult.Failed(ConnectionFailureReason.RegisterGattServer)
+        }
+
         if (lastError == ConnectionFailureReason.GattErrorUnknown147) {
             // Try scanning before connecting (this seems to magically allow android to connect,
             // when otherwise it can't).
@@ -75,9 +89,8 @@ class PebbleBle(
         // (Pebble 2 / silk / Dialog); fall back to hosting forward PPoG
         // ourselves if neither is present.
         val watchServices = device.services?.takeIf { discovered }.orEmpty()
-        val bleConfig = libPebbleConfigFlow.value.bleConfig
         val reversedConfig: PpogClientConfig? = when {
-            !bleConfig.useReversedPpogV2 -> null
+            forwardOnly -> null
 
             watchServices.any { it.uuid == PPOGATT_WATCH_SERVER_V2_SERVICE } -> PpogClientConfig(
                 serviceUuid = PPOGATT_WATCH_SERVER_V2_SERVICE,
@@ -100,7 +113,7 @@ class PebbleBle(
         logger.d("reversedConfig = $reversedConfig")
 
         if (reversedConfig == null) {
-            if (!gattServerManager.registerDevice(identifier, pPoGStream.inboundPPoGBytesChannel)) {
+            if (!earlyForward && !gattServerManager.registerDevice(identifier, pPoGStream.inboundPPoGBytesChannel)) {
                 return PebbleConnectionResult.Failed(ConnectionFailureReason.RegisterGattServer)
             }
             ppogPacketSenderProxy.configureForward()

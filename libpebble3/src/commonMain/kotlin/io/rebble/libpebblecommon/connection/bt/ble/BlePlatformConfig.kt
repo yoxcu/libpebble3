@@ -25,4 +25,9 @@ data class BlePlatformConfig(
      *  ~5s (MOB-9394), wedging Kable's write() before any bytes are dispatched.
      *  When set, WithoutResponse writes time out after this and re-issue. */
     val writeWithoutResponseStallTimeout: Duration? = null,
+    /** Register the device with the forward-PPoG GATT server (which publishes the PPoG service on
+     *  first use) BEFORE connecting, not after service discovery, whenever reversed PPoG V2 is off.
+     *  For stacks where the watch starts forward PPoG (META read, RESET_REQUEST) before connect()
+     *  returns: on BlueZ that is seconds before ServicesResolved. */
+    val registerForwardPpogBeforeConnect: Boolean = false,
 )
