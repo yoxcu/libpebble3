@@ -260,6 +260,7 @@ class BluezGattConnector(
             return GattConnectionResult.Failure(ConnectionFailureReason.FailedToConnect)
         }
         logger.i { "connect() starting for $path" }
+        val startedAtMs = System.currentTimeMillis() // wall clock, so the logged duration matches log timestamps
         val c = DBusConnectionBuilder.forSystemBus().withShared(false).build()
         conn = c
         val device = c.getRemoteObject(ORG_BLUEZ, path, BluezDevice1::class.java)
@@ -435,7 +436,7 @@ class BluezGattConnector(
 
                 if (resolved.isCompleted) {
                     if (resolved.await()) {
-                        logger.i { "connected and services resolved" }
+                        logger.i { "connected and services resolved (${System.currentTimeMillis() - startedAtMs} ms after connect())" }
                         succeeded = true
                         scope.launch(Dispatchers.IO) { reconcileConnectedState(props, linkUp) }
                         return GattConnectionResult.Success(BluezConnectedGattClient(identifier, c, path))
@@ -447,8 +448,19 @@ class BluezGattConnector(
                 }
                 // No link yet: the attempt ended (or the cap elapsed). A brief settle keeps us from
                 // reconnecting faster than the watch can cleanly re-advertise, then we re-arm.
-                logger.d { "connect attempt ended without a link; re-arming in $RETRY_BACKOFF" }
-                delay(RETRY_BACKOFF)
+                // The settle only holds back the next Connect(); it must not hold back NOTICING a link.
+                // The first Connect() of a reconnect typically ends within ~0.1-0.6 s with
+                // ServicesResolved still false, and the link then comes up / finishes resolving
+                // during the settle (BlueZ's standing intent keeps going) — so wake as soon as
+                // `resolved` completes; the next pass then takes the success path at once (its
+                // Connect() on an already-connected device is a no-op in BlueZ, which may still log a
+                // second "Connect() returned" next to the success line). With a plain delay() here a
+                // link was only noticed when the settle ended: none of 230 reconnects in one desktop
+                // log came in under 5 s (most 5.1-5.7 s, some ~10.5 s) — quantised to this backoff,
+                // not to the radio. A stuck half-link never completes `resolved`, so its re-arms keep
+                // the full settle.
+                logger.d { "connect attempt ended without a link; waiting up to $RETRY_BACKOFF for it to resolve before re-arming" }
+                withTimeoutOrNull(RETRY_BACKOFF) { resolved.await() }
             }
             // Scope cancelled (Bluetooth off / requestDisconnection / forget).
             if (!_disconnected.isCompleted) _disconnected.complete(ConnectionFailureReason.FailedToConnect)
@@ -548,7 +560,8 @@ class BluezGattConnector(
         private val REARM_INTERVAL = 60.seconds
         // Settle after a Connect() that ended without establishing a link (e.g. a 0x3e flap) before
         // re-arming — short enough to recover a restart in seconds, long enough to let the watch
-        // re-advertise cleanly rather than flapping again on an even faster reconnect.
+        // re-advertise cleanly rather than flapping again on an even faster reconnect. Ends early when
+        // the link resolves meanwhile (it paces re-issued Connect() calls, never success detection).
         private val RETRY_BACKOFF = 5.seconds
         // How often reconcileConnectedState() re-checks BlueZ's Connected property directly.
         // Just a backstop against a missed signal, so this can be relaxed; short enough that an
@@ -556,9 +569,11 @@ class BluezGattConnector(
         private val RECONCILE_INTERVAL = 5.minutes
         // Consecutive arming cycles BlueZ may report Connected=true && ServicesResolved=false before we
         // force a Disconnect() to re-resolve GATT. Normal resolution completes in <5s; each arming cycle
-        // is paced by RETRY_BACKOFF (~5s) since a Connect() on an already-connected device returns fast,
-        // so ~4 cycles ≈ 20s of confirmed stuck-state — long enough not to interrupt a resolve in
-        // progress, short enough to unstick a wedged half-link quickly. (Case B: ACL up, GATT stuck.)
+        // is paced by RETRY_BACKOFF (~5s) since a Connect() on an already-connected device returns fast.
+        // The check runs before each settle, so the 4th sighting lands 3 settles after the first:
+        // ≈15s of confirmed stuck-state (16-17.5s after "connect() starting" in the logs) — long enough
+        // not to interrupt a resolve in progress, short enough to unstick a wedged half-link quickly.
+        // (Case B: ACL up, GATT stuck.)
         private val STUCK_RESOLVE_CYCLES = 4
         // Consecutive cycles our own DBusConnection may fail to read the device's state before we fail
         // out so the reconnect machinery rebuilds the connector on a FRESH connection. Guards the case
