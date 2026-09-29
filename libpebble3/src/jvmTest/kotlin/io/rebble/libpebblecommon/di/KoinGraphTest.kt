@@ -10,6 +10,8 @@ import io.rebble.libpebblecommon.BleConfig
 import io.rebble.libpebblecommon.BleConfigFlow
 import io.rebble.libpebblecommon.LibPebbleConfig
 import io.rebble.libpebblecommon.LibPebbleConfigFlow
+import io.rebble.libpebblecommon.NotificationConfig
+import io.rebble.libpebblecommon.NotificationConfigFlow
 import io.rebble.libpebblecommon.WatchConfig
 import io.rebble.libpebblecommon.WatchConfigFlow
 import io.rebble.libpebblecommon.calendar.SystemCalendar
@@ -25,6 +27,8 @@ import io.rebble.libpebblecommon.connection.WebServices
 import io.rebble.libpebblecommon.connection.asPebbleBleIdentifier
 import io.rebble.libpebblecommon.connection.asPebbleBtClassicIdentifier
 import io.rebble.libpebblecommon.connection.bt.ble.BlePlatformConfig
+import io.rebble.libpebblecommon.connection.endpointmanager.blobdb.NotificationCatchUp
+import io.rebble.libpebblecommon.connection.endpointmanager.blobdb.TimeProvider
 import io.rebble.libpebblecommon.connection.endpointmanager.timeline.PlatformNotificationActionHandler
 import io.rebble.libpebblecommon.connection.fakeWatch
 import io.rebble.libpebblecommon.database.DATABASE_FILENAME
@@ -70,6 +74,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.minutes
 import kotlin.uuid.Uuid
 
 /**
@@ -83,11 +88,16 @@ import kotlin.uuid.Uuid
  * covers that binding's production chain separately.
  */
 class KoinGraphTest {
-    // The daemon's defaults: forward (non-reversed) PPoG, LAN developer connection.
+    // The daemon's defaults: forward (non-reversed) PPoG, LAN developer connection, a 10-minute
+    // notification catch-up window (notification.catch_up_minutes).
     private val config = LibPebbleConfig(
         bleConfig = BleConfig(legacyReversedPPoG = false, useReversedPpogV2 = false),
         watchConfig = WatchConfig(lanDevConnection = true),
+        notificationConfig = NotificationConfig(missedNotificationCatchUpMs = 10.minutes.inWholeMilliseconds),
     )
+
+    // Like the daemon, every pinned config flow shares this one flow.
+    private val pinnedConfig = MutableStateFlow(config)
 
     /**
      * Test doubles for exactly the bindings the daemon overrides unconditionally, so the graph
@@ -97,11 +107,13 @@ class KoinGraphTest {
      */
     private val daemonOverrides = module {
         single<NotificationListenerConnection> { stub<NotificationListenerConnection>() }
-        single { BleConfigFlow(MutableStateFlow(config)) }
-        single { WatchConfigFlow(MutableStateFlow(config)) }
+        single { BleConfigFlow(pinnedConfig) }
+        single { WatchConfigFlow(pinnedConfig) }
         // PebbleBle now reads LibPebbleConfigFlow rather than BleConfigFlow, so the daemon has to
         // pin this one as well for its transport choice to survive persisted preferences.
-        single { LibPebbleConfigFlow(MutableStateFlow(config)) }
+        single { LibPebbleConfigFlow(pinnedConfig) }
+        // The notification catch-up window (NotificationCatchUp) reads this one.
+        single { NotificationConfigFlow(pinnedConfig) }
         single<PlatformNotificationActionHandler> { stub<PlatformNotificationActionHandler>() }
         single<TimeChanged> { stub<TimeChanged>() }
         single { PlatformFlags(PhoneAppVersion.PlatformFlag.makeFlags(PhoneAppVersion.OSType.Android, emptyList())) }
@@ -111,9 +123,21 @@ class KoinGraphTest {
         single<SystemGeolocation> { stub<SystemGeolocation>() }
     }
 
-    /** Test-only: keep the run off the user's real Java preferences and ~/.config/stoandl DB. */
+    /**
+     * Test-only: keep the run off the user's real Java preferences and ~/.config/stoandl DB. The
+     * preferences hold what an earlier daemon run persisted (LibPebbleConfigHolder saves its default
+     * on first use and loads storage over it from then on), from before the catch-up window existed:
+     * the pinned flows must win over it.
+     */
     private val hermeticOverrides = module {
-        single<Settings> { PropertiesSettings(Properties()) }
+        single<Settings> {
+            PropertiesSettings(Properties().apply {
+                setProperty(
+                    "libpebble.settings",
+                    Json.encodeToString(config.copy(notificationConfig = NotificationConfig())),
+                )
+            })
+        }
         single<Database> {
             Room.inMemoryDatabaseBuilder<Database>()
                 .setDriver(BundledSQLiteDriver())
@@ -142,6 +166,15 @@ class KoinGraphTest {
         assertTrue(
             koin.get<BlePlatformConfig>().registerForwardPpogBeforeConnect,
             "JVM must register forward PPoG before connecting (BlueZ)",
+        )
+        // WatchManager creates NotificationCatchUp with LibPebble; it must see the pinned window, not
+        // the persisted 0 (upstream: the threshold is always "now").
+        val syncStart = koin.get<TimeProvider>().now() + 1.minutes
+        assertTrue(
+            koin.get<NotificationCatchUp>().insertOnlyAfter(
+                "AA:BB:CC:DD:EE:02".asPebbleBtClassicIdentifier(), syncStart,
+            ) < syncStart,
+            "NotificationCatchUp must read the pinned NotificationConfigFlow",
         )
 
         // Every root definition. Per-connection ones are resolved through real connection scopes
