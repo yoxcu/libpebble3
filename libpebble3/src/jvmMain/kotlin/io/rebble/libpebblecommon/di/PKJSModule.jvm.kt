@@ -22,6 +22,7 @@ actual val pkjsPlatformModule: Module = module {
             remoteTimelineEmulator = get(),
             httpInterceptorManager = get(),
             notificationConfigFlow = get(),
+            pluginRegistry = get(),
         )
     } bind JsRunner::class
 }
