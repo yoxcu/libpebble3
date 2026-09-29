@@ -15,7 +15,9 @@ import io.rebble.libpebblecommon.WatchConfigFlow
 import io.rebble.libpebblecommon.calendar.SystemCalendar
 import io.rebble.libpebblecommon.calls.SystemCallLog
 import io.rebble.libpebblecommon.connection.AppContext
+import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.CreatePlatformIdentifier
+import io.rebble.libpebblecommon.connection.FakeAppMessages
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.connection.PlatformFlags
 import io.rebble.libpebblecommon.connection.TokenProvider
@@ -24,11 +26,16 @@ import io.rebble.libpebblecommon.connection.asPebbleBleIdentifier
 import io.rebble.libpebblecommon.connection.asPebbleBtClassicIdentifier
 import io.rebble.libpebblecommon.connection.bt.ble.BlePlatformConfig
 import io.rebble.libpebblecommon.connection.endpointmanager.timeline.PlatformNotificationActionHandler
+import io.rebble.libpebblecommon.connection.fakeWatch
 import io.rebble.libpebblecommon.database.DATABASE_FILENAME
 import io.rebble.libpebblecommon.database.Database
 import io.rebble.libpebblecommon.database.getRoomDatabase
+import io.rebble.libpebblecommon.js.CompanionAppDevice
+import io.rebble.libpebblecommon.js.GraalJsRunner
 import io.rebble.libpebblecommon.js.InjectedPKJSHttpInterceptors
 import io.rebble.libpebblecommon.js.JsRunner
+import io.rebble.libpebblecommon.js.testAppInfo
+import io.rebble.libpebblecommon.js.testLockerEntry
 import io.rebble.libpebblecommon.metadata.WatchColor
 import io.rebble.libpebblecommon.music.SystemMusicControl
 import io.rebble.libpebblecommon.notification.NotificationListenerConnection
@@ -37,10 +44,13 @@ import io.rebble.libpebblecommon.stoandlConfigDir
 import io.rebble.libpebblecommon.time.TimeChanged
 import io.rebble.libpebblecommon.util.SystemGeolocation
 import io.rebble.libpebblecommon.voice.TranscriptionProvider
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.io.files.Path
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
@@ -48,6 +58,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assume.assumeTrue
 import org.koin.core.annotation.KoinInternalApi
+import org.koin.core.parameter.parameterArrayOf
 import org.koin.core.qualifier.named
 import org.koin.dsl.module
 import java.io.File
@@ -56,8 +67,10 @@ import java.nio.file.Files
 import java.util.Properties
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.uuid.Uuid
 
 /**
  * Resolves the whole JVM Koin graph the way the stoandl daemon builds it: [initKoin] with the JVM
@@ -132,8 +145,7 @@ class KoinGraphTest {
         )
 
         // Every root definition. Per-connection ones are resolved through real connection scopes
-        // below. The PKJS JsRunner factory needs per-app parametersOf(...); its injected deps are
-        // root singles, so they're covered here.
+        // below, and the PKJS JsRunner factory, which needs per-app parameters, after this loop.
         val failures = mutableListOf<String>()
         // Koin has no public API that lists definitions (Module.mappings is @KoinInternalApi too),
         // so instanceRegistry is the one internal call; the rest is public. ConnectionScope is the
@@ -152,6 +164,26 @@ class KoinGraphTest {
                 }
             }
         assertTrue(failures.isEmpty(), "Unresolvable Koin definitions:\n" + failures.joinToString("\n"))
+
+        // PKJSApp.injectJsRunner's parameters, in its order: Koin matches them by position and type
+        // (two are Channel<String>), so a reordered or retyped one fails here, not at the first app.
+        val watch = fakeWatch(connected = true) as ConnectedPebbleDevice
+        val appUuid = Uuid.random()
+        val jsPath = Path("/nonexistent/$appUuid.js")
+        val runner = koin.get<JsRunner> {
+            parameterArrayOf(
+                CompanionAppDevice(watch.identifier, watch.watchInfo, FakeAppMessages()),
+                CoroutineScope(SupervisorJob()),
+                testAppInfo(appUuid),
+                testLockerEntry(appUuid),
+                jsPath,
+                Channel<String>(),
+                Channel<String>(),
+            )
+        }
+        assertIs<GraalJsRunner>(runner)
+        assertEquals(jsPath, runner.jsPath)
+        assertEquals(appUuid.toString(), runner.appInfo.uuid)
 
         // One connection scope per JVM transport, created the way WatchManager does it. Creating it
         // resolves the whole per-connection graph (connector, services, endpoint managers).
@@ -273,17 +305,18 @@ private fun SQLiteConnection.queryText(sql: String): String = prepare(sql).use {
 }
 
 /**
- * Interface double for a binding the daemon (or initKoin's caller) supplies. Building the graph
- * must not call into it, so anything but Object's own methods fails loudly with the member's name.
+ * Interface double for a binding the daemon (or initKoin's caller) supplies. The code under test
+ * (building the graph, running PKJS) must not call into it, so anything but Object's own methods
+ * fails loudly with the member's name.
  */
-private inline fun <reified T : Any> stub(): T {
+internal inline fun <reified T : Any> stub(): T {
     val name = T::class.java.simpleName
     return Proxy.newProxyInstance(T::class.java.classLoader, arrayOf(T::class.java)) { proxy, method, args ->
         when (method.name) {
             "toString" -> "stub $name"
             "hashCode" -> System.identityHashCode(proxy)
             "equals" -> proxy === args?.firstOrNull()
-            else -> throw UnsupportedOperationException("$name.${method.name} called while building the graph")
+            else -> throw UnsupportedOperationException("$name.${method.name} called on a test stub")
         }
     } as T
 }
