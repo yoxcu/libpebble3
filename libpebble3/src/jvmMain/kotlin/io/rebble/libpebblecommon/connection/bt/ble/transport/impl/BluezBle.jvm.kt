@@ -584,53 +584,60 @@ private class BluezConnectedGattClient(
         discover()
     }
 
-    private fun discover() {
-        synchronized(discoverLock) {
-            val newCharPaths = HashMap<Pair<Uuid, Uuid>, String>()
-            val out = ArrayList<GattService>()
-            try {
-                val objMgr = conn.getRemoteObject(ORG_BLUEZ, "/", ObjectManager::class.java)
-                val managed = objMgr.GetManagedObjects()
-                val prefix = "$devicePath/"
-                val serviceUuidByPath = HashMap<String, Uuid>()
-                managed.forEach { (p, ifaces) ->
-                    val ps = p.toString()
-                    if (!ps.startsWith(prefix)) return@forEach
-                    val svc = ifaces[GATT_SERVICE1] ?: return@forEach
-                    val uuid = (unwrapVariant(svc["UUID"]) as? String)?.let { runCatching { Uuid.parse(it) }.getOrNull() }
-                    if (uuid != null) serviceUuidByPath[ps] = uuid
-                }
-                val charsByService = HashMap<Uuid, MutableList<GattCharacteristic>>()
-                managed.forEach { (p, ifaces) ->
-                    val ps = p.toString()
-                    if (!ps.startsWith(prefix)) return@forEach
-                    val ch = ifaces[GATT_CHARACTERISTIC1] ?: return@forEach
-                    val charUuid = (unwrapVariant(ch["UUID"]) as? String)?.let { runCatching { Uuid.parse(it) }.getOrNull() }
-                        ?: return@forEach
-                    val svcPath = unwrapVariant(ch["Service"])?.toString() ?: return@forEach
-                    val svcUuid = serviceUuidByPath[svcPath] ?: return@forEach
-                    val flags = when (val f = unwrapVariant(ch["Flags"])) {
-                        is Array<*> -> f.filterIsInstance<String>()
-                        is List<*> -> f.filterIsInstance<String>()
-                        else -> emptyList()
-                    }
-                    newCharPaths[svcUuid to charUuid] = ps
-                    val propsBits = flagsToProperties(flags)
-                    charsByService.getOrPut(svcUuid) { mutableListOf() }
-                        .add(GattCharacteristic(uuid = charUuid, properties = propsBits, permissions = propsBits, descriptors = emptyList()))
-                }
-                charsByService.forEach { (svc, chars) -> out.add(GattService(svc, chars)) }
-                charPaths = newCharPaths
-                _services = out
-                logger.d { "discovered ${out.size} services, ${newCharPaths.size} characteristics" }
-            } catch (e: Exception) {
-                logger.e("service discovery failed", e)
+    /** Re-enumerate this device's services from BlueZ's object tree. False if the enumeration failed. */
+    private fun discover(): Boolean = synchronized(discoverLock) {
+        val newCharPaths = HashMap<Pair<Uuid, Uuid>, String>()
+        val out = ArrayList<GattService>()
+        val ok = try {
+            val objMgr = conn.getRemoteObject(ORG_BLUEZ, "/", ObjectManager::class.java)
+            val managed = objMgr.GetManagedObjects()
+            val prefix = "$devicePath/"
+            val serviceUuidByPath = HashMap<String, Uuid>()
+            managed.forEach { (p, ifaces) ->
+                val ps = p.toString()
+                if (!ps.startsWith(prefix)) return@forEach
+                val svc = ifaces[GATT_SERVICE1] ?: return@forEach
+                val uuid = (unwrapVariant(svc["UUID"]) as? String)?.let { runCatching { Uuid.parse(it) }.getOrNull() }
+                if (uuid != null) serviceUuidByPath[ps] = uuid
             }
-            lastDiscoverMs = System.currentTimeMillis()
+            val charsByService = HashMap<Uuid, MutableList<GattCharacteristic>>()
+            managed.forEach { (p, ifaces) ->
+                val ps = p.toString()
+                if (!ps.startsWith(prefix)) return@forEach
+                val ch = ifaces[GATT_CHARACTERISTIC1] ?: return@forEach
+                val charUuid = (unwrapVariant(ch["UUID"]) as? String)?.let { runCatching { Uuid.parse(it) }.getOrNull() }
+                    ?: return@forEach
+                val svcPath = unwrapVariant(ch["Service"])?.toString() ?: return@forEach
+                val svcUuid = serviceUuidByPath[svcPath] ?: return@forEach
+                val flags = when (val f = unwrapVariant(ch["Flags"])) {
+                    is Array<*> -> f.filterIsInstance<String>()
+                    is List<*> -> f.filterIsInstance<String>()
+                    else -> emptyList()
+                }
+                newCharPaths[svcUuid to charUuid] = ps
+                val propsBits = flagsToProperties(flags)
+                charsByService.getOrPut(svcUuid) { mutableListOf() }
+                    .add(GattCharacteristic(uuid = charUuid, properties = propsBits, permissions = propsBits, descriptors = emptyList()))
+            }
+            charsByService.forEach { (svc, chars) -> out.add(GattService(svc, chars)) }
+            charPaths = newCharPaths
+            _services = out
+            logger.d { "discovered ${out.size} services, ${newCharPaths.size} characteristics" }
+            true
+        } catch (e: Exception) {
+            logger.e("service discovery failed", e)
+            false
         }
+        lastDiscoverMs = System.currentTimeMillis()
+        ok
     }
 
     override suspend fun discoverServices(): Boolean = _services?.isNotEmpty() == true
+
+    // BlueZ owns the GATT cache and re-resolves it itself (e.g. on a Service Changed indication), so
+    // the JVM equivalent of Android's forced cache refresh is an immediate re-enumeration of BlueZ's
+    // object tree, bypassing charPathFor()'s miss-throttle.
+    override suspend fun refreshServicesNative(): Boolean = discover()
 
     private fun charPathFor(serviceUuid: Uuid, characteristicUuid: Uuid): String? {
         fun lookup(): String? = charPaths[serviceUuid to characteristicUuid]
@@ -645,7 +652,11 @@ private class BluezConnectedGattClient(
         return lookup()
     }
 
-    override fun subscribeToCharacteristic(serviceUuid: Uuid, characteristicUuid: Uuid): Flow<ByteArray>? {
+    override fun subscribeToCharacteristic(
+        serviceUuid: Uuid,
+        characteristicUuid: Uuid,
+        onSubscription: (suspend () -> Unit)?,
+    ): Flow<ByteArray>? {
         val path = charPathFor(serviceUuid, characteristicUuid) ?: run {
             // Some optional characteristics (e.g. connection params) are absent on certain firmwares;
             // the upper layers tolerate this, so keep it quiet.
@@ -668,8 +679,21 @@ private class BluezConnectedGattClient(
                 }
             }
             val charObj = conn.getRemoteObject(ORG_BLUEZ, path, BluezGattCharacteristic1Client::class.java)
-            try { charObj.StartNotify() } catch (e: Exception) { logger.w { "StartNotify failed: ${e.message}" } }
-            awaitClose {
+            val notifying = try {
+                charObj.StartNotify()
+                true
+            } catch (e: Exception) {
+                logger.w { "StartNotify failed: ${e.message}" }
+                false
+            }
+            try {
+                // Like kable's observe(onSubscription): run the hook once notifications are live, so the
+                // caller can re-read state notified before StartNotify landed (connectivity) or know the
+                // subscription is armed before it writes (reversed PPoG's CCCD wait). Skipped when
+                // StartNotify failed, which reversed PPoG then treats as a subscribe timeout.
+                if (notifying) onSubscription?.invoke()
+                awaitClose()
+            } finally {
                 try { charObj.StopNotify() } catch (_: Exception) {}
                 try { handle.close() } catch (_: Exception) {}
             }
@@ -732,7 +756,7 @@ private class BluezConnectedGattClient(
 
     override fun close() {
         // The DBusConnection is owned by BluezGattConnector; notify subscriptions clean themselves up
-        // via their awaitClose blocks when their collecting scope is cancelled.
+        // (StopNotify + handler removal) when their collecting scope is cancelled.
         logger.d { "close()" }
     }
 }
