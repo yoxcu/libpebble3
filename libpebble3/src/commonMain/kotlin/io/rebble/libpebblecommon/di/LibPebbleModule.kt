@@ -46,6 +46,7 @@ import io.rebble.libpebblecommon.connection.Timeline
 import io.rebble.libpebblecommon.connection.TokenProvider
 import io.rebble.libpebblecommon.connection.TransportConnector
 import io.rebble.libpebblecommon.connection.WatchConnector
+import io.rebble.libpebblecommon.connection.WatchLinkActivity
 import io.rebble.libpebblecommon.connection.WatchManager
 import io.rebble.libpebblecommon.connection.WatchPrefs
 import io.rebble.libpebblecommon.connection.WebServices
@@ -470,6 +471,8 @@ fun initKoin(
                 singleOf(::InterruptedFirmwareUpdates)
                 singleOf(::JsTokenUtil)
                 singleOf(::Datalogging)
+                // Fork (stoandl): process-wide link activity for hosts that suspend (see WatchLinkActivity).
+                singleOf(::WatchLinkActivity)
                 singleOf(::Health)
                 singleOf(::ErrorTracker)
                 singleOf(::RealConnectionFailureHandler) bind ConnectionFailureHandler::class

@@ -9,6 +9,7 @@ import coredev.BlobDatabase
 import io.rebble.libpebblecommon.LibPebbleConfigFlow
 import io.rebble.libpebblecommon.NotificationConfigFlow
 import io.rebble.libpebblecommon.connection.PebbleIdentifier
+import io.rebble.libpebblecommon.connection.WatchLinkActivity
 import io.rebble.libpebblecommon.database.dao.BlobDbDao
 import io.rebble.libpebblecommon.database.dao.BlobDbRecord
 import io.rebble.libpebblecommon.database.dao.LockerEntryRealDao
@@ -44,6 +45,8 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -112,6 +115,7 @@ class BlobDB(
     private val notificationConfigFlow: NotificationConfigFlow,
     private val settings: Settings,
     private val libPebbleConfigFlow: LibPebbleConfigFlow,
+    private val linkActivity: WatchLinkActivity,
 ) {
     protected val watchIdentifier: String = identifier.asString
 
@@ -128,6 +132,16 @@ class BlobDB(
     private val operationLock = Mutex()
     private val databasesWhichWillSync = MutableStateFlow(setOf(BlobDatabase.WatchPrefs))
 
+    // Fork (stoandl): dirty records not yet attempted on this connection, per dirty query
+    // ("<db>/insert" or "<db>/delete"), summed into WatchLinkActivity. A host that suspends right after
+    // a push wake uses it to hold its sleep delay lock until a fresh notification has gone out.
+    private val unattempted = MutableStateFlow<Map<String, Int>>(emptyMap())
+
+    /** Per-query bookkeeping: hashes of the latest dirty list, and those already handed to the watch. */
+    private data class QueryProgress(val latest: Set<Int> = emptySet(), val attempted: Set<Int> = emptySet()) {
+        val pending: Int get() = latest.count { it !in attempted }
+    }
+
     /**
      * Run [query] continually, updating the query timestamp (so that it does not become stale).
      */
@@ -137,6 +151,20 @@ class BlobDB(
         collector: suspend (items: List<BlobDbRecord>) -> Unit,
     ) {
         val initialTimestamp = timeProvider.now()
+        val queryKey = "${dao.databaseId()}/${if (insert) "insert" else "delete"}"
+        // A record the watch rejects (or that has no value for this watch) stays dirty in the DB; once
+        // it has been attempted on this connection it must not count as pending, or the host would
+        // wait out its whole sleep delay on every suspend.
+        val progress = MutableStateFlow(QueryProgress())
+        fun publish() {
+            // Loop until [progress] did not change under us, so the onEach producer and the collector
+            // can't race each other into leaving a stale count behind.
+            while (true) {
+                val snapshot = progress.value
+                unattempted.update { it + (queryKey to snapshot.pending) }
+                if (progress.value == snapshot) break
+            }
+        }
         watchScope.launch {
             val tickerFlow = flow {
                 while (true) {
@@ -160,10 +188,22 @@ class BlobDB(
                         )
                     }
                 }
+                // Upstream of conflate(): runs as soon as Room emits, even while the collector below
+                // is busy or debouncing — so a record inserted mid-sync counts as pending at once.
+                .onEach { items ->
+                    val latest = items.mapTo(HashSet()) { it.recordHashcode }
+                    progress.update { QueryProgress(latest = latest, attempted = it.attempted intersect latest) }
+                    publish()
+                }
                 .conflate()
                 .distinctUntilChanged()
                 .collect { items ->
-                    collector(items)
+                    try {
+                        collector(items)
+                    } finally {
+                        progress.update { it.copy(attempted = it.attempted + items.map { i -> i.recordHashcode }) }
+                        publish()
+                    }
                     // debounce
                     delay(1.seconds)
                 }
@@ -187,6 +227,16 @@ class BlobDB(
         )
         val deviceHasPreviouslySyncedSettings =
             loadDevicePreviousSettingsSyncState().identifiers.contains(identifier.asString)
+        // Fork (stoandl): publish the unattempted-record count (see [unattempted]); the finally clears
+        // it when the connection scope ends.
+        watchScope.launch {
+            val source = "blobdb:$watchIdentifier"
+            try {
+                unattempted.collect { linkActivity.report(source, it.values.sum()) }
+            } finally {
+                linkActivity.report(source, 0)
+            }
+        }
         watchScope.launch {
             // Watch isn't sending a version response
             val blobDbVersion = if (capabilities.contains(ProtocolCapsFlag.SupportsBlobDbVersion)) {

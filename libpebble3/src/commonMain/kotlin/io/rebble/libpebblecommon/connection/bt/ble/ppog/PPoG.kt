@@ -13,6 +13,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
@@ -37,6 +40,16 @@ class PPoG(
     private val logger = Logger.withTag("PPoG")
     private var mtu: Int = blePlatformConfig.initialMtu
     private var closed = false
+
+    // Fork (stoandl): link activity for hosts that suspend aggressively. [pendingPackets] is what the
+    // phone still owes the watch on this link (queued + sent-but-unacked data packets); a host holding
+    // a logind delay lock waits for it to reach 0 before letting the system sleep. [dataPackets] counts
+    // data packets in both directions and drives ConnectionParams' bulk-transfer detector. PPoG lives
+    // in the connection scope, so readers collect these in that scope and treat its end as "0 pending".
+    private val _pendingPackets = MutableStateFlow(0)
+    val pendingPackets: StateFlow<Int> = _pendingPackets.asStateFlow()
+    private val _dataPackets = MutableStateFlow(0L)
+    val dataPackets: StateFlow<Long> = _dataPackets.asStateFlow()
 
     fun run(reversed: Boolean = false) {
         logger.d("run(): ${if (reversed) "sending" else "waiting for"} PPoG RESET_REQUEST")
@@ -279,6 +292,7 @@ class PPoG(
                         }
                         .forEach {
                             outboundDataQueue.addLast(it)
+                            _dataPackets.value++
                         }
                 }
                 pPoGStream.inboundPPoGBytesChannel.onReceive { bytes ->
@@ -331,6 +345,7 @@ class PPoG(
                                 pebbleProtocolStreams.inboundPPBytes.writeByteArray(packet.data)
                                 pebbleProtocolStreams.inboundPPBytes.flush()
                                 inboundSequence.increment()
+                                _dataPackets.value++
                                 // TODO coalesced ACKing
                                 lastSentAck = PPoGPacket.Ack(sequence = packet.sequence)
                                     .also { sendPacketImmediately(it, params.pPoGversion) }
@@ -371,6 +386,7 @@ class PPoG(
                 rescheduleTimeout()
                 inflightPackets.add(packet)
             }
+            _pendingPackets.value = outboundDataQueue.size + inflightPackets.size
         }
     }
 
