@@ -336,10 +336,14 @@ class BluezGattConnector(
         // Standing connection intent. Keep a Device1.Connect() pending and re-issue it slowly; NEVER
         // call Disconnect() on failure — that cancels BlueZ's kernel connect intent and is what turned
         // reconnection into a losing race against the watch's advertising window. For a bonded watch
-        // this suspends at near-zero cost until the watch advertises and BlueZ links up. A genuinely
-        // stale bond surfaces as Connect() throwing "doesn't exist" → terminal FailedToConnect, which
-        // the stale-bond reaper then clears. Cancellation (BT off / requestDisconnection / forget)
-        // unwinds via the scope and is cleaned up in the finally.
+        // this suspends at near-zero cost until the watch advertises and BlueZ links up. A missing
+        // device object — Connect() throwing "doesn't exist": adapter absent or unconfigured,
+        // bluetoothd restarting, or the host-side bond removed — is a terminal FailedToConnect, so
+        // WatchManager retries on a fresh connector. That is NOT a stale-bond signal (the object comes
+        // back still Paired when the adapter does); a watch that rejects the bond instead shows up as
+        // Device1.Disconnected(reason=Authentication), which the host's broken-bond detector keys off.
+        // Cancellation (BT off / requestDisconnection / forget) unwinds via the scope and is cleaned
+        // up in the finally.
         var succeeded = false
         // Arming-phase reconcile bookkeeping (consumed by the block after attempt.cancel() below):
         // consecutive cycles seen stuck (Connected && !ServicesResolved) / unreadable (null state).
