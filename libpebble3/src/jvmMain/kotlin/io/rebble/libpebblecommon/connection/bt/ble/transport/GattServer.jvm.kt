@@ -118,8 +118,11 @@ actual class GattServer {
 
     // Called by GattServerManager on the first registerDevice(). On JVM that call comes from
     // PebbleBle BEFORE it connects (BlePlatformConfig.registerForwardPpogBeforeConnect), so the PPoG
-    // service is published before the link comes up and never mid-connection, and the device is
-    // already registered when the watch starts writing.
+    // service is published before the daemon's own Connect() and the device is already registered
+    // when the watch starts writing. That is not "before the link": the watch is Trusted, so
+    // bluetoothd may have re-established the link on its own (e.g. across a daemon restart) before
+    // the first connect, and then this registers mid-link and the watch sees a Service Changed.
+    // Eager registration had the same exposure, only narrowed to the gap before the first connect.
     actual suspend fun addServices() {
         val adapterPath = findGattAdapterPath() ?: "/org/bluez/hci0"
         try {
