@@ -7,6 +7,7 @@ import io.rebble.libpebblecommon.connection.KnownWatchProperties
 import io.rebble.libpebblecommon.connection.PebbleBleIdentifier
 import io.rebble.libpebblecommon.connection.PebbleConnectionResult
 import io.rebble.libpebblecommon.connection.TransportConnector
+import io.rebble.libpebblecommon.connection.WatchLinkActivity
 import io.rebble.libpebblecommon.connection.bt.ble.BlePlatformConfig
 import io.rebble.libpebblecommon.connection.bt.ble.pebble.LEConstants.TARGET_MTU
 import io.rebble.libpebblecommon.connection.bt.ble.pebble.LEConstants.UUIDs.PPOGATT_DEVICE_CHARACTERISTIC_READ
@@ -44,6 +45,7 @@ class PebbleBle(
     private val preConnectScanner: PreConnectScanner,
     private val libPebbleConfigFlow: LibPebbleConfigFlow,
     private val blePlatformConfig: BlePlatformConfig,
+    private val linkActivity: WatchLinkActivity,
 ) : TransportConnector {
     private val logger = Logger.withTag("PebbleBle/${identifier.asString}")
 
@@ -225,6 +227,18 @@ class PebbleBle(
         }
 
         ppog.run(reversed = useReversed)
+        // Fork (stoandl): publish this link's PPoG backlog for hosts that hold a sleep delay lock while
+        // a delivery is in flight (see WatchLinkActivity). The collector lives in the connection scope,
+        // so the finally reports "nothing pending" the moment the connection ends, whatever PPoG's last
+        // value was.
+        scope.launch {
+            val source = "ppog:${identifier.asString}"
+            try {
+                ppog.pendingPackets.collect { linkActivity.report(source, it) }
+            } finally {
+                linkActivity.report(source, 0)
+            }
+        }
         return PebbleConnectionResult.Success(if (useReversed) reversedConfig?.version else null)
     }
 
