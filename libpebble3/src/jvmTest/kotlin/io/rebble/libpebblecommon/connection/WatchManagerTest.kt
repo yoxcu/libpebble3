@@ -1,6 +1,7 @@
 package io.rebble.libpebblecommon.connection
 
 import io.rebble.libpebblecommon.LibPebbleAnalytics
+import io.rebble.libpebblecommon.NotificationConfig
 import io.rebble.libpebblecommon.WatchConfig
 import io.rebble.libpebblecommon.asFlow
 import io.rebble.libpebblecommon.connection.bt.BluetoothState
@@ -10,6 +11,8 @@ import io.rebble.libpebblecommon.connection.bt.ble.pebble.BatteryWatcher
 import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdater
 import io.rebble.libpebblecommon.connection.endpointmanager.LanguagePackInstallState
 import io.rebble.libpebblecommon.connection.endpointmanager.LanguagePackInstaller
+import io.rebble.libpebblecommon.connection.endpointmanager.blobdb.NotificationCatchUp
+import io.rebble.libpebblecommon.connection.endpointmanager.blobdb.RealTimeProvider
 import io.rebble.libpebblecommon.database.BlobDbDatabaseManager
 import io.rebble.libpebblecommon.database.MillisecondInstant
 import io.rebble.libpebblecommon.database.dao.KnownWatchDao
@@ -306,6 +309,7 @@ class WatchManagerTest {
                 settings = testSettings,
                 blePlatformConfig = blePlatformConfig,
             ),
+            notificationCatchUp = NotificationCatchUp(RealTimeProvider(), NotificationConfig().asFlow()),
         )
     }
 

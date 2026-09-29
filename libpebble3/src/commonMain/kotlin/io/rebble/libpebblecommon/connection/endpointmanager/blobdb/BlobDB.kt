@@ -116,6 +116,7 @@ class BlobDB(
     private val settings: Settings,
     private val libPebbleConfigFlow: LibPebbleConfigFlow,
     private val linkActivity: WatchLinkActivity,
+    private val notificationCatchUp: NotificationCatchUp,
 ) {
     protected val watchIdentifier: String = identifier.asString
 
@@ -148,9 +149,11 @@ class BlobDB(
     private fun dynamicQuery(
         dao: BlobDbDao<BlobDbRecord>,
         insert: Boolean,
+        // Fork (stoandl): the `onlyInsertAfter` threshold; null = upstream (records created from now on).
+        insertOnlyAfter: Instant? = null,
         collector: suspend (items: List<BlobDbRecord>) -> Unit,
     ) {
-        val initialTimestamp = timeProvider.now()
+        val initialTimestamp = insertOnlyAfter ?: timeProvider.now()
         val queryKey = "${dao.databaseId()}/${if (insert) "insert" else "delete"}"
         // A record the watch rejects (or that has no value for this watch) stays dirty in the DB; once
         // it has been attempted on this connection it must not count as pending, or the host would
@@ -227,6 +230,14 @@ class BlobDB(
         )
         val deviceHasPreviouslySyncedSettings =
             loadDevicePreviousSettingsSyncState().identifiers.contains(identifier.asString)
+        // Fork (stoandl): a connection that wipes the watch (below) bounds its notification catch-up.
+        // Recorded here, not when the sync starts: the connection turns Connected as soon as init()
+        // returns, which persists the watch as known — a drop during the handshake below would otherwise
+        // leave the next (no longer fresh) connection with wiped sync state and no floor, catching up on
+        // notifications from before the pairing.
+        if (unfaithful || !previouslyConnected) {
+            notificationCatchUp.markFreshStart(identifier, timeProvider.now())
+        }
         // Fork (stoandl): publish the unattempted-record count (see [unattempted]); the finally clears
         // it when the connection scope ends.
         watchScope.launch {
@@ -329,9 +340,26 @@ class BlobDB(
                 }
             }
 
+            // Fork (stoandl): the notification DB may also send what this watch missed while it was away
+            // (NotificationCatchUp; upstream when the window is 0). Every other DB keeps upstream's threshold.
+            val syncStart = timeProvider.now()
+            val notificationsAfter = notificationCatchUp.insertOnlyAfter(watch = identifier, now = syncStart)
+            logger.d { "Notification catch-up: threshold $notificationsAfter (sync start $syncStart)" }
             blobDatabases.get().forEach { db ->
                 db.deleteStaleRecords(timeProvider.now().toEpochMilliseconds())
-                dynamicQuery(dao = db, insert = true) { dirty ->
+                val isNotificationDb = db.databaseId() == BlobDatabase.Notification
+                // Fork (stoandl): the notification DB's first dirty list is what this connection catches
+                // up on; log it only when there is something (the threshold alone proves nothing).
+                var catchUpBatch = isNotificationDb && notificationsAfter < syncStart
+                dynamicQuery(
+                    dao = db,
+                    insert = true,
+                    insertOnlyAfter = notificationsAfter.takeIf { isNotificationDb },
+                ) { dirty ->
+                    if (catchUpBatch && dirty.isNotEmpty()) {
+                        logger.i { "Notification catch-up: sending ${dirty.size} unsent notification(s) created after $notificationsAfter" }
+                    }
+                    catchUpBatch = false
                     dirty.forEach { item ->
                         operationLock.withLock {
                             handleInsert(db, item, params, blobDbVersion)
