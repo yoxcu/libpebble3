@@ -131,6 +131,21 @@ XMLHttpRequest.prototype._onResponseComplete = function(responseHeaders, status,
     }
 };
 
+// EventTarget.dispatchEvent and the Event constructor, which startup.js's intercepted-XHR completion
+// (signalInterceptResponse) and its error fallback use; GraalJS has neither, so without these every
+// intercepted request threw "Event is not defined" and its load/loadend never fired.
+if (typeof globalThis.Event !== "function") {
+    globalThis.Event = function Event(type) {
+        this.type = type;
+    };
+}
+
+XMLHttpRequest.prototype.dispatchEvent = function(event) {
+    if (event.target === undefined) event.target = this;
+    this._dispatchEvent(event.type, event);
+    return true;
+};
+
 XMLHttpRequest.prototype._dispatchEvent = function(type, event) {
     if (this._listeners.has(type)) {
         const listeners = this._listeners.get(type);
