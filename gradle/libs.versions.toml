@@ -2,6 +2,7 @@
 android-compileSdk = "37"
 android-minSdk = "26"
 android-targetSdk = "36"
+# The Android gate in settings.gradle.kts checks AGP's minimum Gradle (9.5.0 for 9.3.1): move it with this.
 agp = "9.3.1"
 kotlin = "2.4.10"
 # Stays 21 (upstream: 17): this drives :blobdbgen (a KSP symbol processor that must be loadable by
