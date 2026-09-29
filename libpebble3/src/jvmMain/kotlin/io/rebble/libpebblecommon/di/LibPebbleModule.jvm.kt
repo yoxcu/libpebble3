@@ -4,7 +4,6 @@ import androidx.compose.ui.graphics.ImageBitmap
 import io.rebble.libpebblecommon.calls.Call
 import io.rebble.libpebblecommon.calls.LegacyPhoneReceiver
 import io.rebble.libpebblecommon.calendar.PlatformCalendarActionHandler
-import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.connection.OtherPebbleApp
 import io.rebble.libpebblecommon.connection.OtherPebbleApps
 import io.rebble.libpebblecommon.connection.PhoneCapabilities
@@ -37,8 +36,6 @@ import org.koin.core.module.Module
 import org.koin.dsl.module
 
 actual val platformModule: Module = module {
-    single { AppContext() }
-
     single {
         PhoneCapabilities(
             CommonPhoneCapabilities + setOf(
