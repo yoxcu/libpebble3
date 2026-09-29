@@ -68,6 +68,7 @@ navigator.geolocation.clearWatch = (id) => {
         error: console.error,
         info: console.info,
         debug: console.debug,
+        trace: console.trace,
     }
     const sendLog = (level, ...args) => {
         // build args into a single string
