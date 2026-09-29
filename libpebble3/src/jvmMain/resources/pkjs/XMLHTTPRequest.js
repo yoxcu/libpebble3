@@ -51,8 +51,11 @@ XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
     if (!password) password = "";
     if (!method) throw new Error("SyntaxError: Method is required.");
     if (!url) throw new Error("SyntaxError: URL is required.");
-    _XMLHTTPRequestManager.open(this._instanceID, method, url, async, user, password);
+    // Like a browser and upstream's shared shim (XmlHttpRequestJs.kt): OPENED is set in JS, then
+    // readystatechange fires, so a handler attached before open() sees readyState 1.
     this.readyState = XMLHttpRequest.OPENED;
+    _XMLHTTPRequestManager.open(this._instanceID, method, url, async, user, password);
+    this._dispatchEvent("readystatechange", { type: "readystatechange" });
 };
 
 XMLHttpRequest.prototype.setRequestHeader = function(header, value) {
@@ -132,21 +135,33 @@ XMLHttpRequest.prototype._dispatchEvent = function(type, event) {
     if (this._listeners.has(type)) {
         const listeners = this._listeners.get(type);
         for (var i = 0; i < listeners.length; i++) {
-            listeners[i](event);
+            _xhrInvokeHandler(type, listeners[i], this, event);
         }
     }
     switch (type) {
-        case "load":            this.onload            && this.onload(event);            break;
-        case "loadend":         this.onloadend         && this.onloadend(event);         break;
-        case "loadstart":       this.onloadstart       && this.onloadstart(event);       break;
-        case "error":           this.onerror           && this.onerror(event);           break;
-        case "abort":           this.onabort           && this.onabort(event);           break;
-        case "progress":        this.onprogress        && this.onprogress(event);        break;
-        case "readystatechange":this.onreadystatechange && this.onreadystatechange(event);break;
-        case "timeout":         this.ontimeout         && this.ontimeout(event);         break;
+        case "load":            _xhrInvokeHandler(type, this.onload, this, event);            break;
+        case "loadend":         _xhrInvokeHandler(type, this.onloadend, this, event);         break;
+        case "loadstart":       _xhrInvokeHandler(type, this.onloadstart, this, event);       break;
+        case "error":           _xhrInvokeHandler(type, this.onerror, this, event);           break;
+        case "abort":           _xhrInvokeHandler(type, this.onabort, this, event);           break;
+        case "progress":        _xhrInvokeHandler(type, this.onprogress, this, event);        break;
+        case "readystatechange":_xhrInvokeHandler(type, this.onreadystatechange, this, event);break;
+        case "timeout":         _xhrInvokeHandler(type, this.ontimeout, this, event);         break;
         default: console.warn("XHR - Unknown event type:", type); break;
     }
 };
+
+// Like a browser: a throwing handler is reported, never propagated. Otherwise a handler that
+// ignores readyState would throw out of open() (so send() never runs), or out of the completion
+// eval (so load/loadend are skipped).
+function _xhrInvokeHandler(type, handler, xhr, event) {
+    if (!handler) return;
+    try {
+        handler.call(xhr, event);
+    } catch (e) {
+        console.error("XHR - Error in " + type + " handler:", e);
+    }
+}
 
 function _xhrDecodeBase64(base64) {
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
