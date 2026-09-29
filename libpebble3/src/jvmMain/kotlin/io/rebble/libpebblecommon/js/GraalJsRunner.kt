@@ -6,6 +6,7 @@ import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.database.entity.LockerEntry
 import io.rebble.libpebblecommon.metadata.pbw.appinfo.PbwAppInfo
+import io.rebble.libpebblecommon.plugin.PluginRegistry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -37,6 +38,7 @@ class GraalJsRunner(
     private val remoteTimelineEmulator: RemoteTimelineEmulator,
     private val httpInterceptorManager: HttpInterceptorManager,
     private val notificationConfigFlow: NotificationConfigFlow,
+    private val pluginRegistry: PluginRegistry,
 ) : JsRunner(appInfo, lockerEntry, jsPath, device, urlOpenRequests) {
 
     private val jsExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
@@ -72,7 +74,7 @@ class GraalJsRunner(
             val privatePkjsIface = JvmPrivatePKJSInterface(
                 this@GraalJsRunner, device, jsScope,
                 _outgoingAppMessages, logMessages, jsTokenUtil,
-                remoteTimelineEmulator, httpInterceptorManager, notificationConfigFlow,
+                remoteTimelineEmulator, httpInterceptorManager, notificationConfigFlow, pluginRegistry,
             )
             val localStorage = GraalJSLocalStorageInterface(appInfo.uuid, appContext)
 
@@ -84,6 +86,8 @@ class GraalJsRunner(
             bindings.putMember("localStorage", localStorage)
 
             ctx.eval("js", BOOTSTRAP_JS)
+            // atob/btoa: browser APIs GraalJS lacks, as on iOS (plugin sources hand bitmaps over as base64).
+            ctx.eval("js", BASE64_JS)
             evalResource(ctx, "/pkjs/JSTimeout.js")
             evalResource(ctx, "/pkjs/XMLHTTPRequest.js")
             evalResource(ctx, "/pkjs/startup.js")
@@ -181,6 +185,13 @@ class GraalJsRunner(
         val json = """{"callId":"${callId.replace("\"", "\\\"")}"}"""
         eval("signalTimelineTokenFailure(${jsStringArg(json)})")
     }
+
+    /**
+     * [json] is already JSON; it goes through [jsStringArg] + `JSON.parse` rather than being
+     * spliced in raw (as Android/iOS do), so a malformed payload is a parse error, not code.
+     */
+    override suspend fun signalConfigMessage(requestId: Int, json: String) =
+        eval("signalConfigMessageEvent($requestId, JSON.parse(${jsStringArg(json)}))")
 
     override fun debugForceGC() { /* GraalJS does not expose GC control */ }
 
