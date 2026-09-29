@@ -87,6 +87,7 @@ import io.rebble.libpebblecommon.connection.endpointmanager.RealLanguagePackInst
 import io.rebble.libpebblecommon.connection.endpointmanager.audio.VoiceSessionManager
 import io.rebble.libpebblecommon.connection.endpointmanager.blobdb.BlobDB
 import io.rebble.libpebblecommon.connection.endpointmanager.blobdb.BlobDbDaos
+import io.rebble.libpebblecommon.connection.endpointmanager.blobdb.NotificationCatchUp
 import io.rebble.libpebblecommon.connection.endpointmanager.blobdb.RealTimeProvider
 import io.rebble.libpebblecommon.connection.endpointmanager.blobdb.TimeProvider
 import io.rebble.libpebblecommon.connection.endpointmanager.musiccontrol.MusicControlManager
@@ -473,6 +474,8 @@ fun initKoin(
                 singleOf(::Datalogging)
                 // Fork (stoandl): process-wide link activity for hosts that suspend (see WatchLinkActivity).
                 singleOf(::WatchLinkActivity)
+                // Fork (stoandl): notification catch-up after a disconnect (see NotificationCatchUp).
+                singleOf(::NotificationCatchUp)
                 singleOf(::Health)
                 singleOf(::ErrorTracker)
                 singleOf(::RealConnectionFailureHandler) bind ConnectionFailureHandler::class

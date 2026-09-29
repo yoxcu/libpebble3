@@ -236,6 +236,16 @@ data class NotificationConfig(
      * Shown under "Canned messages" in the watch action menu.
      */
     val cannedResponses: List<String> = listOf("Ok", "Yes", "No", "Call me", "Call you later"),
+    /**
+     * Fork addition (stoandl, for hosts whose watch link drops while notifications keep arriving — a
+     * phone that loses the link on every suspend, a watch out of range). `0` (the default) keeps the
+     * upstream behaviour: a connection only sends notifications created after its sync started, so
+     * anything posted while the watch was away is never delivered. Non-zero: a (re)connecting watch also
+     * gets the notifications it has not received that are at most this old — never ones from before
+     * libpebble started, or from before the watch's last fresh start (first connection after pairing,
+     * unfaithful watch). See NotificationCatchUp. Read at each connection.
+     */
+    val missedNotificationCatchUpMs: Long = 0,
 )
 
 class NotificationConfigFlow(val flow: StateFlow<LibPebbleConfig>) {

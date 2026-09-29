@@ -9,6 +9,7 @@ import io.rebble.libpebblecommon.connection.bt.BluetoothStateProvider
 import io.rebble.libpebblecommon.connection.bt.ble.BlePlatformConfig
 import io.rebble.libpebblecommon.connection.endpointmanager.FirmwareUpdater.FirmwareUpdateStatus
 import io.rebble.libpebblecommon.connection.endpointmanager.LanguagePackInstallState
+import io.rebble.libpebblecommon.connection.endpointmanager.blobdb.NotificationCatchUp
 import io.rebble.libpebblecommon.database.BlobDbDatabaseManager
 import io.rebble.libpebblecommon.database.MillisecondInstant
 import io.rebble.libpebblecommon.database.asMillisecond
@@ -166,6 +167,9 @@ class WatchManager(
     private val settings: Settings,
     private val appContext: AppContext,
     private val legacyBtClassicMigrator: LegacyBtClassicMigrator,
+    // Fork (stoandl): taken here, not only by the per-connection BlobDB, so it exists from libpebble's
+    // start (its catch-up floor) and can drop a forgotten watch's state.
+    private val notificationCatchUp: NotificationCatchUp,
 ) : WatchConnector, Watches {
     private val logger = Logger.withTag("WatchManager")
     private val allWatches: MutableStateFlow<Map<PebbleIdentifier, Watch>> = MutableStateFlow(
@@ -745,6 +749,7 @@ class WatchManager(
     override fun forget(identifier: PebbleIdentifier) {
         requestDisconnection(identifier)
         updateWatch(identifier) { it.copy(forget = true) }
+        notificationCatchUp.forget(identifier)
     }
 
     private fun Watch.logAnalyticsEvent(name: String, props: Map<String, String>? = null) {
