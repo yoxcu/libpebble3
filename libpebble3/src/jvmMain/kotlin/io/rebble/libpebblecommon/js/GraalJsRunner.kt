@@ -7,15 +7,19 @@ import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.database.entity.LockerEntry
 import io.rebble.libpebblecommon.metadata.pbw.appinfo.PbwAppInfo
 import io.rebble.libpebblecommon.plugin.PluginRegistry
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.completeWith
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.plus
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.io.buffered
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
@@ -23,6 +27,7 @@ import kotlinx.io.readString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlin.time.Duration.Companion.seconds
 import org.graalvm.polyglot.Context as GraalContext
 import org.graalvm.polyglot.HostAccess
 import org.graalvm.polyglot.PolyglotException
@@ -210,12 +215,45 @@ class GraalJsRunner(
     override fun debugForceGC() { /* GraalJS does not expose GC control */ }
 
     override suspend fun stop() {
-        withContext(jsThread) {
-            jsContext?.close()
-            jsContext = null
+        _readyState.value = false
+        // NonCancellable, as on Android: stop() is often called from an already-cancelled
+        // connection scope (watch disconnect), and withContext would then throw before closing
+        // the context, leaking it and its non-daemon JS thread.
+        withContext(NonCancellable) {
+            try {
+                // Close on the JS thread, after any callback already queued there. Awaited through a
+                // deferred, not withContext(jsThread), which waits out a busy JS thread whatever the
+                // timeout; bounded, since app JS stuck in a synchronous loop would otherwise hold this
+                // NonCancellable stop() (and the app switch or disconnect behind it) forever.
+                val closedOnJsThread = CompletableDeferred<Unit>()
+                jsExecutor.execute {
+                    closedOnJsThread.completeWith(runCatching { closeContext(cancelIfExecuting = false) })
+                }
+                if (withTimeoutOrNull(STOP_TIMEOUT) { closedOnJsThread.await() } == null) {
+                    logger.w { "JS thread still busy after $STOP_TIMEOUT; cancelling the running script" }
+                    closeContext(cancelIfExecuting = true)
+                }
+            } catch (e: Exception) {
+                logger.e(e) { "Error closing Graal context" }
+            } finally {
+                // Always, even if closing failed: the non-daemon JS thread must not outlive the app.
+                jsThread.close()
+                jsExecutor.shutdown()
+            }
         }
-        jsThread.close()
-        jsExecutor.shutdown()
+    }
+
+    /**
+     * Takes the context exactly once, so the JS-thread close and the timeout fallback never both
+     * close it. `close(cancelIfExecuting = true)` may be called from any thread.
+     */
+    private fun closeContext(cancelIfExecuting: Boolean) {
+        val ctx = synchronized(this) { jsContext.also { jsContext = null } } ?: return
+        ctx.close(cancelIfExecuting)
+    }
+
+    private companion object {
+        val STOP_TIMEOUT = 5.seconds
     }
 }
 
