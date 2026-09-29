@@ -10,11 +10,13 @@ import io.rebble.libpebblecommon.connection.bt.ble.pebble.LEConstants.BOND_NONE
 import io.rebble.libpebblecommon.connection.bt.classic.transport.ClassicDevice1
 import io.rebble.libpebblecommon.connection.bt.classic.transport.findClassicDevicePath
 import io.rebble.libpebblecommon.di.ConnectionCoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.freedesktop.dbus.annotations.DBusInterfaceName
 import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder
@@ -125,18 +127,24 @@ actual fun getBluetoothDevicePairEvents(
         // common case where BlueZ creates a new device entry for the resolved public address
         // after bonding, so the Paired D-Bus signal never appears on the original object path.
         val connectivityJob = launch {
+            var reread: Job? = null
             connectivityWatcher.status.collect { status ->
                 if (status.paired) {
                     log.d { "Connectivity reports paired: $identifier" }
                     trySend(BluetoothDevicePairEvent(identifier, BOND_BONDED, null))
-                } else if (status.encrypted) {
+                } else if (status.encrypted && reread?.isActive != true) {
                     // The watch doesn't always notify when paired flips after encryption (upstream
-                    // 24af5b38), and this path is then the only bond signal left: re-read it. A child
-                    // of this flow (not connectionScope) so it stops when pairing stops listening.
-                    launch {
-                        log.d { "Connectivity: encrypted but not paired; re-reading in 2s" }
-                        delay(2.seconds)
-                        connectivityWatcher.readValue()
+                    // 24af5b38), and this path is then the only bond signal left: re-read it. One
+                    // polling loop at most: every read re-emits (ConnectivityStatus has no equals()),
+                    // so launching per emission would multiply the loops. A child of this flow (not
+                    // connectionScope) so it stops when pairing stops listening.
+                    reread = launch {
+                        log.d { "Connectivity: encrypted but not paired; re-reading every 2s" }
+                        do {
+                            delay(2.seconds)
+                            connectivityWatcher.readValue()
+                            val current = connectivityWatcher.status.first()
+                        } while (current.encrypted && !current.paired)
                     }
                 }
             }
