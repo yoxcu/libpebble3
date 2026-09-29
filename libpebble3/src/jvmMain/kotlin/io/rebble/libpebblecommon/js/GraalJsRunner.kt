@@ -20,6 +20,9 @@ import kotlinx.io.buffered
 import kotlinx.io.files.Path
 import kotlinx.io.files.SystemFileSystem
 import kotlinx.io.readString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.graalvm.polyglot.Context as GraalContext
 import org.graalvm.polyglot.HostAccess
 import org.graalvm.polyglot.PolyglotException
@@ -158,8 +161,11 @@ class GraalJsRunner(
         }
     }
 
-    private fun jsStringArg(s: String?): String =
-        if (s != null) "'${s.replace("\\", "\\\\").replace("'", "\\'")}'" else "null"
+    /**
+     * [s] as a JS string literal (or `null`). JSON-encoded, never hand-escaped: a raw newline or
+     * control char inside a hand-quoted literal is a silent SyntaxError and the callback never fires.
+     */
+    private fun jsStringArg(s: String?): String = Json.encodeToString(s)
 
     override suspend fun signalNewAppMessageData(data: String?): Boolean {
         eval("signalNewAppMessageData(${jsStringArg(data)})")
@@ -172,18 +178,26 @@ class GraalJsRunner(
         eval("signalWebviewClosedEvent(${jsStringArg(data)})")
 
     override suspend fun signalInterceptResponse(callbackId: String, result: InterceptResponse) {
-        val body = result.result.replace("\\", "\\\\").replace("'", "\\'")
-        eval("signalInterceptResponse({callbackId:'$callbackId',status:${result.status},response:'$body'})")
+        val json = buildJsonObject {
+            put("callbackId", callbackId)
+            put("response", result.result)
+            put("status", result.status)
+        }
+        // A raw object literal, not a quoted string: startup.js reads the fields directly.
+        eval("signalInterceptResponse($json)")
     }
 
     override suspend fun signalTimelineToken(callId: String, token: String) {
-        val json = """{"callId":"${callId.replace("\"", "\\\"")}","userToken":"${token.replace("\"", "\\\"")}"}"""
-        eval("signalTimelineTokenSuccess(${jsStringArg(json)})")
+        val json = buildJsonObject {
+            put("callId", callId)
+            put("userToken", token)
+        }
+        eval("signalTimelineTokenSuccess(${jsStringArg(json.toString())})")
     }
 
     override suspend fun signalTimelineTokenFail(callId: String) {
-        val json = """{"callId":"${callId.replace("\"", "\\\"")}"}"""
-        eval("signalTimelineTokenFailure(${jsStringArg(json)})")
+        val json = buildJsonObject { put("callId", callId) }
+        eval("signalTimelineTokenFailure(${jsStringArg(json.toString())})")
     }
 
     /**
