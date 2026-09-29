@@ -76,7 +76,8 @@ class RealWatchPrefs(
         val dbValues = dbPrefs.mapNotNull { pref ->
             val prefType = WatchPref.from(pref.id)
             if (prefType == null) {
-                logger.w { "Don't know how to encode watch pref key: ${pref.id}" }
+                // A row an older libpebble3 wrote for a pref since removed (e.g. langEnglish).
+                logger.d { "Don't know how to encode watch pref key: ${pref.id}" }
                 return@mapNotNull null
             }
             prefType.toWatchPreference(pref.value)

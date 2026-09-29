@@ -66,7 +66,7 @@ data class WatchPrefItem(
         }
         val type = WatchPref.from(id)
         if (type == null) {
-            logger.w { "Don't know how to encode watch pref key: $id" }
+            logger.d { "Don't know how to encode watch pref key: $id" }
             return null
         }
         logger.v { "trying to insert watch pref to watch blobdb: $id / $value" }
