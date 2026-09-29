@@ -67,7 +67,8 @@ actual val platformModule: Module = module {
             // BlueZ: the watch reads META and writes RESET_REQUEST to our GATT server seconds before
             // ServicesResolved, so register the forward-PPoG device (and publish the PPoG service)
             // before connecting. GattServer.initServer() registers nothing on JVM, so this is the
-            // only thing that puts the service up before the link.
+            // only thing that puts the service up before our Connect() (not necessarily before the
+            // link: see GattServer.addServices()).
             registerForwardPpogBeforeConnect = true,
         )
     }
