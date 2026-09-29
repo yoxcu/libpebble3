@@ -39,12 +39,15 @@ include(":blobannotations")
 // :cactus-native is the NDK half of :cactus, so it goes wherever :cactus goes.
 // This is the one Android gate: :libpebble3 and :blobannotations read it from gradle.extra to
 // decide whether to apply the Android plugin at all.
-// It also requires Gradle 9, because AGP 9 refuses to run on Gradle 8. stoandl's composite build runs
-// this build on its own Gradle 8.14, where an ANDROID_HOME exported by a CI runner image or Android
-// Studio must not switch Android on. The gate is runtime-only: both scripts still import AGP's
+// It needs a standalone build of this repo: included in stoandl's composite, this build runs on
+// stoandl's Gradle, and an ANDROID_HOME exported by a CI runner image or an sdk.dir Android Studio
+// wrote to local.properties must never switch Android on there, whatever that Gradle is. It also
+// needs a Gradle the applied AGP runs on (AGP 9.3.1 fails configuration below 9.5.0; keep this in
+// step with `agp` in libs.versions.toml). The gate is runtime-only: both scripts still import AGP's
 // KotlinMultiplatformAndroidLibraryTarget, compiled against the AGP that the root build.gradle.kts
 // `apply false` lines put on the classpath.
-val enableAndroid = GradleVersion.current().baseVersion >= GradleVersion.version("9.0") &&
+val enableAndroid = gradle.parent == null &&
+    GradleVersion.current().baseVersion >= GradleVersion.version("9.5") &&
     (!System.getenv("ANDROID_HOME").isNullOrBlank() || properties.getProperty("sdk.dir") != null)
 gradle.extra["enableAndroid"] = enableAndroid
 if (enableAndroid) {
