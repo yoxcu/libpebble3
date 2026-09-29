@@ -34,6 +34,8 @@ class JvmXMLHTTPRequestManager(
         val headers: MutableMap<String, String> = mutableMapOf(),
     )
 
+    // Per instance, for the XHR's lifetime: an app may reuse one XMLHttpRequest (open, send,
+    // open, send ...), as browsers, Android and upstream's shared manager allow.
     private val pending = ConcurrentHashMap<Int, RequestState>()
     private val jobs = ConcurrentHashMap<Int, Job>()
 
@@ -48,13 +50,13 @@ class JvmXMLHTTPRequestManager(
     }
 
     fun open(instanceId: Int, method: String, url: String, async: Boolean, user: String, password: String) {
-        val state = pending[instanceId] ?: return
-        val headers = state.headers.toMutableMap()
+        // Like a browser, open() starts a fresh request: the previous request's headers don't carry over.
+        val headers = mutableMapOf<String, String>()
         if (user.isNotEmpty()) {
             val creds = Base64.getEncoder().encodeToString("$user:$password".toByteArray())
             headers["Authorization"] = "Basic $creds"
         }
-        pending[instanceId] = state.copy(method = method, url = url, headers = headers)
+        pending[instanceId] = RequestState(method = method, url = url, headers = headers)
     }
 
     fun setRequestHeader(instanceId: Int, header: String, value: String) {
@@ -62,7 +64,9 @@ class JvmXMLHTTPRequestManager(
     }
 
     fun send(instanceId: Int, responseType: String, body: String?) {
-        val state = pending.remove(instanceId) ?: return
+        val opened = pending[instanceId] ?: return
+        // Snapshot: a reuse's setRequestHeader() must not touch this request's headers mid-flight.
+        val state = opened.copy(headers = opened.headers.toMutableMap())
         val job = scope.launch(Dispatchers.IO) {
             try {
                 val bodyPublisher = if (body != null && body.isNotEmpty())
