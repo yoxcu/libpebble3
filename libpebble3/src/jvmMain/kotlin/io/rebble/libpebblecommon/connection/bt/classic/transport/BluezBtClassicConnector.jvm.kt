@@ -24,7 +24,8 @@ import kotlin.time.Duration.Companion.seconds
  * straight into the Pebble protocol layer (no PPoGATT wrapper — over Classic the RFCOMM stream *is*
  * the Pebble protocol transport).
  *
- * Auto-pairs if the watch isn't BR/EDR-bonded (the agent auto-confirms host-side; user taps the watch)
+ * Auto-pairs if the watch isn't BR/EDR-bonded (the host's pairing agent answers the numeric comparison —
+ * stoandl's asks the user on a Pair/Repair window, accepts otherwise; the user confirms on the watch)
  * and resolves the SPP RFCOMM channel via SDP, falling back to [PebbleBtClassicIdentifier.rfcommChannel].
  */
 class BluezBtClassicConnector(

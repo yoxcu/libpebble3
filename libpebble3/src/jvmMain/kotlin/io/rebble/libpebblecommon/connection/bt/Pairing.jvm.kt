@@ -183,9 +183,10 @@ actual fun isBondedClassic(identifier: PebbleBtClassicIdentifier): Boolean {
 }
 
 actual fun createBondClassic(identifier: PebbleBtClassicIdentifier): Boolean {
-    // Device1.Pair() over the BR/EDR device object (created by the Classic scanner). The pairing agent
-    // auto-confirms the Numeric-Comparison passkey host-side; the user confirms the matching code ON THE
-    // WATCH. Blocks until bonded or the BlueZ pairing timeout. NB: on a dual-mode device this may pair
+    // Device1.Pair() over the BR/EDR device object (created by the Classic scanner). The host's pairing
+    // agent answers the Numeric-Comparison passkey (stoandl's asks the user via ConfirmPairing on a
+    // Pair/Repair window, accepts otherwise); the user confirms the matching code ON THE WATCH. Blocks
+    // until bonded, declined or the BlueZ pairing timeout. NB: on a dual-mode device this may pair
     // LE (CTKD) rather than BR/EDR — if so the RFCOMM connect fails and a manual `btmgmt pair -t bredr`
     // is the fallback. Pairing a device discovered via the bredr inquiry filter does a BR/EDR bond.
     return try {
