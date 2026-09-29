@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -123,11 +124,100 @@ class PPoGTest {
                 ppog = PPoG(ppStreams, ppogStreams, sender, bleConfigFlow, blePlatformConfig, scope)
                 ppog.run(false)
                 init(sendResetComplete = false)
-                // stoandl raised the PPoG init timeout 12s→30s (commit 4375b8c7); advance past the
-                // full 30s phase-1 + 5s fallback window so the handshake timeout actually fires.
+                // stoandl raised the forward-path init timeout 12s→30s, and advanceTimeBy() is
+                // exclusive at its endpoint: advance past the 30s wait so the handshake timeout
+                // actually fires (fallbackToResetRequest is off here, so there is no extra 5s).
                 testScheduler.advanceTimeBy(40.seconds)
             }
         }
+    }
+
+    @Test
+    fun forwardInitOutlastsTwelveSeconds() = runTest {
+        // Forward PPoG must not give up at upstream's 12s: on BlueZ the watch's ResetRequest can
+        // come later. PPoG itself waits 30s; in production the Negotiator's 20s timeout, which
+        // starts at the same moment, is the effective cap.
+        val scope = ConnectionCoroutineScope(backgroundScope.coroutineContext)
+        ppog = PPoG(ppStreams, ppogStreams, sender, bleConfigFlow, blePlatformConfig, scope)
+        ppog.run(false)
+        testScheduler.advanceTimeBy(20.seconds)
+        init()
+        val inbound0 = ppogDataPacket(0)
+        receivePacket(inbound0)
+        assertOutboundPPoGPacket(PPoGPacket.Ack(sequence = 0))
+        assertInboundPPBytes(inbound0.data)
+    }
+
+    @Test
+    fun reversedInitTimeout() {
+        // The reversed path keeps upstream's 12s timeout; the 30s only applies to forward PPoG.
+        assertThrows(ConnectionException::class.java) {
+            runTest {
+                val scope = ConnectionCoroutineScope(backgroundScope.coroutineContext)
+                ppog = PPoG(ppStreams, ppogStreams, sender, bleConfigFlow, blePlatformConfig, scope)
+                ppog.run(reversed = true)
+                assertOutboundPPoGPacket(PPoGPacket.ResetRequest(sequence = 0, ppogVersion = PPoGVersion.ONE))
+                testScheduler.advanceTimeBy(20.seconds)
+            }
+        }
+    }
+
+    @Test
+    fun forwardInitResendsResetCompleteOnRepeatedResetRequest() = runTest {
+        val scope = ConnectionCoroutineScope(backgroundScope.coroutineContext)
+        ppog = PPoG(ppStreams, ppogStreams, sender, bleConfigFlow, blePlatformConfig, scope)
+        ppog.run(false)
+        init(sendResetComplete = false)
+        // Our ResetComplete notification was dropped: the watch times out and retries its
+        // ResetRequest, which must get a fresh ResetComplete rather than be ignored.
+        init()
+        val inbound0 = ppogDataPacket(0)
+        receivePacket(inbound0)
+        assertOutboundPPoGPacket(PPoGPacket.Ack(sequence = 0))
+        assertInboundPPBytes(inbound0.data)
+    }
+
+    @Test
+    fun resetAfterCloseEndsSessionQuietly() = runTest {
+        val crashed = MutableStateFlow(false)
+        val exceptionHandler = CoroutineExceptionHandler { _, _ ->
+            crashed.value = true
+        }
+        val scope =
+            ConnectionCoroutineScope(backgroundScope.coroutineContext + SupervisorJob() + exceptionHandler)
+        ppog = PPoG(ppStreams, ppogStreams, sender, bleConfigFlow, blePlatformConfig, scope)
+        ppog.run(false)
+        init()
+        // One data round-trip, so the session is open and parked in its select loop.
+        val inbound0 = ppogDataPacket(0)
+        receivePacket(inbound0)
+        assertOutboundPPoGPacket(PPoGPacket.Ack(sequence = 0))
+        assertInboundPPBytes(inbound0.data)
+
+        ppog.close()
+        // The watch answering our close-time ResetRequest is not an in-session reset storm.
+        receivePacket(PPoGPacket.ResetComplete(sequence = 0, rxWindow = 19, txWindow = 20))
+        testScheduler.advanceUntilIdle()
+        assertFalse(crashed.value)
+    }
+
+    @Test
+    fun initTimeoutAfterCloseEndsQuietly() = runTest {
+        val crashed = MutableStateFlow(false)
+        val exceptionHandler = CoroutineExceptionHandler { _, _ ->
+            crashed.value = true
+        }
+        val scope =
+            ConnectionCoroutineScope(backgroundScope.coroutineContext + SupervisorJob() + exceptionHandler)
+        ppog = PPoG(ppStreams, ppogStreams, sender, bleConfigFlow, blePlatformConfig, scope)
+        ppog.run(false)
+        testScheduler.advanceTimeBy(5.seconds)
+        // The connection failed elsewhere (e.g. negotiation timed out) and was closed while PPoG
+        // was still waiting for the watch's ResetRequest.
+        ppog.close()
+        testScheduler.advanceTimeBy(40.seconds)
+        testScheduler.advanceUntilIdle()
+        assertFalse(crashed.value)
     }
 
     @Test
