@@ -39,5 +39,7 @@ class ConnectionParamsTest {
         assertNotNull(idle.copy(supervisionTimeoutMs = 1000).validate())    // <= 2 x 520 ms
         assertNotNull(idle.copy(slaveLatency = 5, supervisionTimeoutMs = 6000).validate()) // 2 x 6 x 520 ms
         assertNotNull(idle.copy(supervisionTimeoutMs = 9000).validate())    // does not fit one byte of 30 ms
+        assertNotNull(idle.copy(minIntervalMs = Double.NaN).validate())     // passes every comparison
+        assertNotNull(idle.copy(maxIntervalMs = Double.NaN).validate())
     }
 }
