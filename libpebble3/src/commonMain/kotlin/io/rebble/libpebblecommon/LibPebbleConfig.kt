@@ -155,7 +155,7 @@ data class BleConfig(
 /**
  * One LE connection-parameter set in the form PebbleOS's Pebble Pairing Service takes it
  * (`pbl_bt_pps_conn_param_set`): interval range, slave latency, supervision timeout.
- * Limits (checked by [validate]): 7.5 ms ≤ min ≤ max ≤ 4 s, max − min ≤ 318.75 ms (one byte of
+ * Limits (checked by [validate]): finite, 7.5 ms ≤ min ≤ max ≤ 4 s, max − min ≤ 318.75 ms (one byte of
  * 1.25 ms steps), latency 0..255, supervision 100 ms..7.65 s (one byte of 30 ms steps) and longer
  * than 2 × (1 + latency) × max interval (the Bluetooth spec rule the Linux host also enforces).
  */
@@ -168,6 +168,8 @@ data class BleConnParamSet(
 ) {
     /** Human-readable problem with this set, or null when PebbleOS and the Linux host accept it. */
     fun validate(): String? = when {
+        // NaN passes every comparison below, then fails encode()'s roundToInt() on every connect.
+        !minIntervalMs.isFinite() || !maxIntervalMs.isFinite() -> "intervals must be numbers"
         minIntervalMs < 7.5 -> "min interval ${minIntervalMs}ms < 7.5ms"
         maxIntervalMs < minIntervalMs -> "max interval ${maxIntervalMs}ms < min ${minIntervalMs}ms"
         maxIntervalMs > 4000.0 -> "max interval ${maxIntervalMs}ms > 4000ms"
