@@ -70,6 +70,11 @@ actual val platformModule: Module = module {
             // only thing that puts the service up before our Connect() (not necessarily before the
             // link: see GattServer.addServices()).
             registerForwardPpogBeforeConnect = true,
+            // Keep the BlueZ GATT server across Bluetooth off/on (the state is real on the JVM since
+            // nativeBluetoothStateFlow reads BlueZ): our exported objects and D-Bus connection survive,
+            // GattServer re-registers the application itself when an adapter reappears, and the next
+            // connect re-adds the service. Closing would tear down that watcher with the connection.
+            closeGattServerWhenBtDisabled = false,
         )
     }
 
