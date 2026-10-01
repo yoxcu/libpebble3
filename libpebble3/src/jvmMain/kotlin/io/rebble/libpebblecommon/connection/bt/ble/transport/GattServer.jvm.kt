@@ -130,22 +130,26 @@ actual class GattServer {
             gattMgr.RegisterApplication(DBusPath(APP_PATH), emptyMap())
             log.i { "BlueZ GATT application registered on $adapterPath" }
         } catch (e: Exception) {
-            log.w { "RegisterApplication failed on $adapterPath (Bluetooth not ready?): $e" }
+            // GattServerManager re-adds the service after Bluetooth was off; BlueZ 5.87 keeps the
+            // registration across an adapter power cycle, so that one is already there.
+            if (e.toString().contains("AlreadyExists")) log.d { "BlueZ GATT application already registered on $adapterPath" }
+            else log.w { "RegisterApplication failed on $adapterPath (Bluetooth not ready?): $e" }
         }
         installGattManagerWatcher()
     }
 
-    // BlueZ destroys our registered GATT application whenever the adapter is powered off (host
-    // suspend, rfkill, or a manual BT toggle). The DBus connection and our exported objects survive,
-    // but the RegisterApplication binding is gone. If we don't re-register when the adapter returns,
-    // the watch reconnects at the link layer (BlueZ reports Connected + services resolved) while our
-    // PPoG GATT server no longer exists — it never StartNotify-subscribes or writes RESET_REQUEST, so
-    // PPoG negotiation times out on every reconnect forever ("connected but no notifications") until
-    // the daemon restarts. Re-register when the adapter's GattManager1 reappears.
+    // BlueZ destroys our registered GATT application when the adapter object goes away (a controller
+    // reset across host suspend, an hci_uart/btusb reload, a bluetoothd restart). The DBus connection
+    // and our exported objects survive, but the RegisterApplication binding is gone. If we don't
+    // re-register when the adapter returns, the watch reconnects at the link layer (BlueZ reports
+    // Connected + services resolved) while our PPoG GATT server no longer exists — it never
+    // StartNotify-subscribes or writes RESET_REQUEST, so PPoG negotiation times out on every reconnect
+    // forever ("connected but no notifications") until the daemon restarts. Re-register when the
+    // adapter's GattManager1 reappears. (A plain power-off keeps both GattManager1 and, on BlueZ 5.87,
+    // the registration.)
     //
-    // libpebble3's generic path for this (GattServerManager closing the server on
-    // BluetoothState.Disabled and re-opening on Enabled) never fires on JVM, because
-    // nativeBluetoothStateFlow() returns null there — so the BlueZ backend self-heals here instead.
+    // This stays event-driven rather than following BluetoothState: a remove/re-add within moments
+    // can be conflated away in the state flow, so Disabled is never seen.
     private fun installGattManagerWatcher() {
         if (gattManagerWatcherInstalled) return
         gattManagerWatcherInstalled = true
