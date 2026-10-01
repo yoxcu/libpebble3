@@ -678,7 +678,7 @@ class WatchManager(
         // scope.
         libPebbleCoroutineScope.async {
             if (!closed.compareAndSet(expectedValue = false, newValue = true)) {
-                logger.w("$identifier: already done cleanup")
+                logger.d("$identifier: already done cleanup")
                 return@async
             }
             try {

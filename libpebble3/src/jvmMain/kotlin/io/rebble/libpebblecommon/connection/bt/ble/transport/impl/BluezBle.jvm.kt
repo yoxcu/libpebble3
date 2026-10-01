@@ -644,7 +644,8 @@ private class BluezConnectedGattClient(
             logger.d { "discovered ${out.size} services, ${newCharPaths.size} characteristics" }
             true
         } catch (e: Exception) {
-            logger.e("service discovery failed", e)
+            if (e.isLinkGone()) logger.d { "service discovery stopped, the link is going away: ${e.message}" }
+            else logger.e("service discovery failed", e)
             false
         }
         lastDiscoverMs = System.currentTimeMillis()
@@ -702,7 +703,8 @@ private class BluezConnectedGattClient(
                 charObj.StartNotify()
                 true
             } catch (e: Exception) {
-                logger.w { "StartNotify failed: ${e.message}" }
+                if (e.isLinkGone()) logger.d { "StartNotify failed, the link is going away: ${e.message}" }
+                else logger.w { "StartNotify failed: ${e.message}" }
                 false
             }
             try {
@@ -769,7 +771,7 @@ private class BluezConnectedGattClient(
                 if (mtu != null && mtu > 0) return mtu
             } catch (_: Exception) {}
         }
-        logger.w { "MTU property unavailable; falling back to $DEFAULT_ATT_MTU" }
+        logger.d { "MTU property unavailable; falling back to $DEFAULT_ATT_MTU" }
         return DEFAULT_ATT_MTU
     }
 
@@ -798,3 +800,7 @@ private fun flagsToProperties(flags: List<String>): Int {
     }
     return bits
 }
+
+/** BlueZ's answer to a call on a link that is being torn down (a suspend, the watch walking away). */
+private fun Exception.isLinkGone(): Boolean =
+    message?.let { "Disconnecting" in it || "Not Connected" in it } == true

@@ -109,6 +109,9 @@ class PPoG(
                 sendPacketImmediately(PPoGPacket.ResetRequest(0, PPoGVersion.ONE), PPoGVersion.ONE)
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: IllegalStateException) {
+                // No PPoG sender (the link closed before PPoG was set up) or no link: nothing to reset.
+                logger.d { "no PPoG reset on close: ${e.message}" }
             } catch (e: Exception) {
                 logger.w("couldn't send PPoG reset on close", e)
             }

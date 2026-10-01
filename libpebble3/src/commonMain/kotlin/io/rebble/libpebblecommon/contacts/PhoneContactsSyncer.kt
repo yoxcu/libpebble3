@@ -38,7 +38,7 @@ class PhoneContactsSyncer(
 
     fun init() {
         if (!systemContacts.hasPermission()) {
-            logger.w { "No permission" }
+            logger.d { "No permission" }
             return
         }
         if (!initialized.compareAndSet(expectedValue = false, newValue = true)) {
