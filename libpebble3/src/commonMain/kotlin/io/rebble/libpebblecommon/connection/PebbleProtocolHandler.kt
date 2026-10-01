@@ -30,12 +30,12 @@ class RealPebbleProtocolHandler(
         pebbleProtocolStreams.inboundMessagesFlow.map { it.rawBytes.asByteArray() }
 
     override suspend fun send(message: PebblePacket, priority: PacketPriority) {
-        logger.d("sending $message")
+        logger.v("sending $message")
         pebbleProtocolStreams.outboundPPBytes.send(message.serialize().asByteArray())
     }
 
     override suspend fun send(message: ByteArray, priority: PacketPriority) {
-        logger.d("sending ${message.joinToString()}")
+        logger.v("sending ${message.joinToString()}")
         pebbleProtocolStreams.outboundPPBytes.send(message)
     }
 }

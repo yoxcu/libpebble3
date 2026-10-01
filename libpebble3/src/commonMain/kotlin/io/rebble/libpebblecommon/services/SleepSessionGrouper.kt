@@ -112,7 +112,7 @@ suspend fun fetchAndGroupDailySleep(
     val sleepEntries = healthDao.getOverlayEntries(searchStart, searchEnd, HealthConstants.SLEEP_TYPES)
 
     val logger = co.touchlab.kermit.Logger.withTag("SleepSessionGrouper")
-    logger.d {
+    logger.v {
         val entries = sleepEntries.map { entry ->
             val type = OverlayType.fromValue(entry.type)?.name ?: "Unknown"
             val durationHrs = round(entry.duration / 360.0) / 10.0
@@ -123,7 +123,7 @@ suspend fun fetchAndGroupDailySleep(
 
     val sessions = groupSleepSessions(sleepEntries)
 
-    logger.d {
+    logger.v {
         val sessionsInfo = sessions.mapIndexed { idx, session ->
             val totalHrs = round(session.totalSleep / 360.0) / 10.0
             val deepHrs = round(session.deepSleep / 360.0) / 10.0

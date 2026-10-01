@@ -72,7 +72,7 @@ class PebbleProtocolRunner(
 //                                Logger.w("error deserializing packet: $packetBytes", e)
                     null
                 }
-                logger.d("inbound pebble protocol packet: $packet")
+                logger.v("inbound pebble protocol packet: $packet")
                 if (packet != null) {
                     dispatch(InboundPPMessage(packet, packetBytes))
                 }

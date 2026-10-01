@@ -399,7 +399,7 @@ class PPoG(
         if (packet is PPoGPacket.Data || packet is PPoGPacket.Ack) {
             verboseLog { "sendPacketImmediately: $packet" }
         } else {
-            logger.d { "sendPacketImmediately: $packet" }
+            logger.v { "sendPacketImmediately: $packet" }
         }
         if (!pPoGPacketSender.sendPacket(packet.serialize(version))) {
             logger.e("Couldn't send packet!")
