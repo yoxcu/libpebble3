@@ -250,7 +250,7 @@ actual class GattServer {
                 return SendResult.Failed
             }
         }
-        log.d { "sendData: emitting PropertiesChanged (${data.size} bytes)" }
+        log.v { "sendData: emitting PropertiesChanged (${data.size} bytes)" }
         return try {
             conn.sendMessage(
                 Properties.PropertiesChanged(
@@ -323,7 +323,7 @@ actual class GattServer {
                 log.i { "WriteValue received while not subscribed — assuming notifications active" }
                 _notifySubscribed.value = true
             }
-            log.d { "WriteValue: ${value.size} bytes" }
+            log.v { "WriteValue: ${value.size} bytes" }
             registeredDevices.values.forEach { it.trySend(value) }
         }
     }
