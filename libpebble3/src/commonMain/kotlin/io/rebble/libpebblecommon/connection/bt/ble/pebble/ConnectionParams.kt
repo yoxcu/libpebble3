@@ -20,6 +20,8 @@ import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.concurrent.Volatile
+import kotlin.concurrent.atomics.AtomicBoolean
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
@@ -50,6 +52,11 @@ import kotlin.time.TimeSource
  * signalling. The watch's own 15 ms discovery request can cause the same trap on its own, which is
  * why the current parameters are logged and checked (see [checkIdleReached]).
  */
+// Once per run: the characteristic is a property of the watch firmware, and every reconnect would repeat it.
+@OptIn(ExperimentalAtomicApi::class)
+private val noCharacteristicWarned = AtomicBoolean(false)
+
+@OptIn(ExperimentalAtomicApi::class)
 class ConnectionParams(
     private val scope: ConnectionCoroutineScope,
     private val bleConfig: BleConfigFlow,
@@ -66,7 +73,11 @@ class ConnectionParams(
         // TODO scope this
         val sub = gattClient.subscribeToCharacteristic(PAIRING_SERVICE_UUID, CONNECTION_PARAMETERS_CHARACTERISTIC)
         if (sub == null) {
-            Logger.d("connection params characteristic not available (not present on core watches yet; harmless)")
+            if (bleConfig.value.connectionParams != null && noCharacteristicWarned.compareAndSet(false, true)) {
+                logger.w { "this watch has no Connection Parameters characteristic — the configured connection parameters have no effect" }
+            } else {
+                logger.d { "connection params characteristic not available (not present on core watches yet; harmless)" }
+            }
             return false
         }
         scope.launch {
