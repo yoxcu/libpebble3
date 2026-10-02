@@ -34,6 +34,11 @@ import kotlin.time.TimeSource
  * the link keeps whatever it had when that write landed — often the watch's 15 ms bulk set from its
  * own early GATT discovery, i.e. ~67 connection events/s for the life of the link.
  *
+ * Fork (stoandl): without configured sets nothing is written, so the watch keeps managing the link with
+ * its own sets (idle 30–45 ms/latency 3, 15 ms while busy) — what every watch without this
+ * characteristic (Core firmware) does anyway. Writing upstream's "phone manages" would freeze the link at
+ * its connect-time parameters as soon as a firmware offers the characteristic again.
+ *
  * Fork (stoandl, for hosts that keep the link up across system suspend): with
  * [io.rebble.libpebblecommon.BleConfig.connectionParams] set, the watch manages the parameters with
  * our sets instead. The idle profile puts the same [BleConnParams.idle] set in all three response-time
@@ -73,10 +78,14 @@ class ConnectionParams(
         // TODO scope this
         val sub = gattClient.subscribeToCharacteristic(PAIRING_SERVICE_UUID, CONNECTION_PARAMETERS_CHARACTERISTIC)
         if (sub == null) {
-            if (bleConfig.value.connectionParams != null && noCharacteristicWarned.compareAndSet(false, true)) {
-                logger.w { "this watch has no Connection Parameters characteristic — the configured connection parameters have no effect" }
-            } else {
-                logger.d { "connection params characteristic not available (not present on core watches yet; harmless)" }
+            // Core firmware (NimBLE) doesn't offer it: the watch then picks its own sets (PebbleOS
+            // gap_le_connect_params.c) and the host accepts its update requests. Once per run is enough.
+            if (noCharacteristicWarned.compareAndSet(false, true)) {
+                if (bleConfig.value.connectionParams != null) {
+                    logger.w { "this watch has no Connection Parameters characteristic — the configured connection parameters have no effect" }
+                } else {
+                    logger.d { "watch has no PPS Connection Parameters characteristic (Core firmware) — the watch manages the link parameters itself" }
+                }
             }
             return false
         }
@@ -86,11 +95,8 @@ class ConnectionParams(
                 onReport(it)
             }
         }
-        val params = bleConfig.value.connectionParams
-        if (params == null) {
-            val value = byteArrayOf(0, 1)
-            return gattClient.writeCharacteristic(PAIRING_SERVICE_UUID, CONNECTION_PARAMETERS_CHARACTERISTIC, value, GattWriteType.WithResponse)
-        }
+        // No sets configured: leave the watch managing with its own (see the class comment).
+        val params = bleConfig.value.connectionParams ?: return true
         val fast = params.fast
         val ok = if (fast != null) writeBoost(gattClient, params.idle, fast) else writeIdle(gattClient, params.idle)
         if (!ok) {
