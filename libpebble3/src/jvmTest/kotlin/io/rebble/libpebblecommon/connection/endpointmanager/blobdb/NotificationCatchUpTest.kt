@@ -91,4 +91,40 @@ class NotificationCatchUpTest {
         assertEquals(now, catchUpThreshold(now = now, floor = t0 + 2.minutes, window = 10.minutes))
         assertEquals(now - 30.seconds, catchUpThreshold(now = now, floor = now - 30.seconds, window = 10.minutes))
     }
+
+    @Test
+    fun pausedTimeDoesNotCountTowardsTheWindow() {
+        val window = 60.minutes
+        val start = t0 + 2.minutes
+        val pauseStart = start + 3.minutes  // 23:00
+        val pauseEnd = pauseStart + 480.minutes // 07:00
+        val c = catchUp(window, startedAt = start - 10.minutes)
+        c.pauseStarted(pauseStart)
+        // During the pause (no connection, but the rule must still hold): the whole pause is skipped.
+        assertEquals(start - 10.minutes, c.insertOnlyAfter(watch, pauseStart + 100.minutes))
+        c.pauseEnded(pauseEnd)
+        // Reconnect 30 s after the pause: the window covers 30 s after it and 59.5 min before it — bounded
+        // here by libpebble's start.
+        assertEquals(start - 10.minutes, c.insertOnlyAfter(watch, pauseEnd + 30.seconds))
+    }
+
+    @Test
+    fun windowReachesBeforeAPause() {
+        val pause = Pause(t0 + 120.minutes, t0 + 600.minutes)
+        val now = pause.end!! + 10.minutes
+        // 10 min after the pause, 50 min before it.
+        assertEquals(pause.start - 50.minutes, catchUpThreshold(now, t0, 60.minutes, listOf(pause)))
+        // An open pause: everything since it, plus the window before it.
+        val open = Pause(t0 + 120.minutes, null)
+        assertEquals(open.start - 60.minutes, catchUpThreshold(t0 + 300.minutes, t0, 60.minutes, listOf(open)))
+        // A pause older than the window changes nothing.
+        val later = pause.end!! + 120.minutes
+        assertEquals(later - 60.minutes, catchUpThreshold(later, t0, 60.minutes, listOf(pause)))
+        // Two pauses: 10 min after the second, 20 min between them, 30 min before the first.
+        val p1 = Pause(t0 + 100.minutes, t0 + 200.minutes)
+        val p2 = Pause(t0 + 220.minutes, t0 + 400.minutes)
+        assertEquals(p1.start - 30.minutes, catchUpThreshold(p2.end!! + 10.minutes, t0, 60.minutes, listOf(p1, p2)))
+        // Window 0 stays upstream.
+        assertEquals(now, catchUpThreshold(now, t0, Duration.ZERO, listOf(pause)))
+    }
 }

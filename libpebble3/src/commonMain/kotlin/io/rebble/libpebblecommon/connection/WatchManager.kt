@@ -44,6 +44,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.runningReduce
 import kotlinx.coroutines.flow.update
@@ -104,6 +105,16 @@ interface WatchConnector {
     fun clearScanResults()
     fun forget(identifier: PebbleIdentifier)
     fun setNickname(identifier: PebbleIdentifier, nickname: String?)
+
+    /**
+     * Fork (stoandl): keep every watch disconnected until the returned handle is closed — a host-side
+     * pause (stoandl's link-off during Quiet Time). Live connections and connect attempts end at once (for
+     * BLE a Device1.Disconnect, which also cancels BlueZ's standing connect). In memory only: the
+     * persisted connectGoal is untouched, so a restart or crash connects as before, and closing the last
+     * hold re-arms whichever watch has the goal. Paused time doesn't count towards the notification
+     * catch-up window ([NotificationCatchUp]). Closing twice is harmless.
+     */
+    fun holdDisconnected(reason: String): AutoCloseable
 }
 
 private data class Watch(
@@ -148,6 +159,7 @@ private data class CombinedState(
     val active: Map<PebbleIdentifier, ActivePebbleState>,
     val previousActive: Map<PebbleIdentifier, ActivePebbleState>,
     val btstate: BluetoothState,
+    val held: Boolean,
 )
 
 class WatchManager(
@@ -214,6 +226,28 @@ class WatchManager(
     override val connectionEvents: Flow<PebbleConnectionEvent> = _connectionEvents.asSharedFlow()
     private val activeConnections = mutableSetOf<PebbleIdentifier>()
     private var connectionNum = 0
+    // Fork (stoandl): open holdDisconnected() handles; while any is open no watch connects.
+    private val holds = MutableStateFlow<Set<Hold>>(emptySet())
+
+    private inner class Hold(val reason: String) : AutoCloseable {
+        override fun close() {
+            val before = holds.getAndUpdate { it - this }
+            if (this in before && before.size == 1) {
+                notificationCatchUp.pauseEnded(clock.now())
+                logger.i { "connections released ($reason)" }
+            }
+        }
+    }
+
+    override fun holdDisconnected(reason: String): AutoCloseable {
+        val hold = Hold(reason)
+        val before = holds.getAndUpdate { it + hold }
+        if (before.isEmpty()) {
+            notificationCatchUp.pauseStarted(clock.now())
+            logger.i { "holding every watch disconnected ($reason)" }
+        }
+        return hold
+    }
     private val timeInitialized = clock.now()
 
     override fun watchesDebugState(): String = "allWatches=${allWatches.value.entries.joinToString("\n")}\n" +
@@ -349,13 +383,14 @@ class WatchManager(
                 allWatches,
                 activeConnectionStates,
                 bluetoothStateProvider.state,
-            ) { watches, active, btState ->
-                CombinedState(watches, active, emptyMap(), btState)
+                holds,
+            ) { watches, active, btState, openHolds ->
+                CombinedState(watches, active, emptyMap(), btState, held = openHolds.isNotEmpty())
             }.runningReduce { previous, current ->
                 current.copy(previousActive = previous.active)
             }.mapNotNull { state ->
                 // State can be null for the first scan emission
-                val (watches, active, previousActive, btState) = state
+                val (watches, active, previousActive, btState, held) = state
                 if (watchConfig.value.verboseWatchManagerLogging) {
                     logger.d { "combine: watches=$watches / active=$active / btstate=$btState / activeConnections=$activeConnections" }
                 }
@@ -378,9 +413,10 @@ class WatchManager(
                         return@mapNotNull null
                     }
 
-                    // Goals
+                    // Goals (fork: a host-side hold overrides the goal without touching it)
                     val btUsable = btState.enabled() || !identifier.requiresBluetooth()
-                    if (device.connectGoal && !hasConnectionAttempt && btUsable) {
+                    val wantConnection = device.connectGoal && !held
+                    if (wantConnection && !hasConnectionAttempt && btUsable) {
                         if (watchConfig.value.multipleConnectedWatchesSupported) {
                             connectTo(device)
                         } else {
@@ -391,7 +427,7 @@ class WatchManager(
                     } else if (hasConnectionAttempt && !btUsable) {
                         disconnectFrom(device.identifier)
                         device.activeConnection?.cleanup()
-                    } else if (!device.connectGoal && hasConnectionAttempt) {
+                    } else if (!wantConnection && hasConnectionAttempt) {
                         disconnectFrom(device.identifier)
                     }
 

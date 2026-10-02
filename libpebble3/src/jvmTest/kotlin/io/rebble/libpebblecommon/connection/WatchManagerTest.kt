@@ -366,6 +366,35 @@ class WatchManagerTest {
     }
 
     @Test
+    fun holdKeepsTheGoalWatchDisconnectedUntilReleased() = runTest(timeout = 5.seconds) {
+        seededKnownWatches = listOf(seededWatch(lastConnected = MillisecondInstant(Instant.fromEpochMilliseconds(1_000))))
+        val watchManager = create(backgroundScope)
+        // Taken before init, like a daemon that starts inside its Quiet Time window.
+        val hold = watchManager.holdDisconnected("test")
+        watchManager.init()
+        delay(5.seconds)
+        assertEquals(0, totalConnections)
+        hold.close()
+        hold.close() // harmless
+        watchManager.watches.first { totalConnections >= 1 && it.any { it is ConnectingPebbleDevice } }
+    }
+
+    @Test
+    fun holdEndsAnAttemptAndStopsTheRetries() = runTest(timeout = 5.seconds) {
+        seededKnownWatches = listOf(seededWatch(lastConnected = MillisecondInstant(Instant.fromEpochMilliseconds(1_000))))
+        val watchManager = create(backgroundScope)
+        watchManager.init()
+        watchManager.watches.first { totalConnections >= 2 }
+        val hold = watchManager.holdDisconnected("test")
+        delay(1.seconds)
+        val held = totalConnections
+        delay(5.seconds)
+        assertEquals(held, totalConnections)
+        hold.close()
+        watchManager.watches.first { totalConnections > held }
+    }
+
+    @Test
     fun watchWithPriorConnectionIsTreatedAsPreviouslyConnected() = runTest(timeout = 5.seconds) {
         seededKnownWatches = listOf(seededWatch(lastConnected = MillisecondInstant(Instant.fromEpochMilliseconds(1_000))))
         val watchManager = create(backgroundScope)

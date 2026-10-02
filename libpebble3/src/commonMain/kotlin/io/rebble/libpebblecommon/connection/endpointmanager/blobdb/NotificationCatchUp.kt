@@ -23,6 +23,10 @@ import kotlin.time.Instant
  *    unfaithful watch — where BlobDB wipes the watch's databases and the watch starts clean. That
  *    connection itself only gets what was created since it began (upstream: since its sync started).
  *
+ * Time the host kept the watches disconnected on purpose ([pauseStarted]/[pauseEnded], the WatchManager
+ * hold) doesn't count towards the window: after a night's pause the watch gets everything posted during
+ * it, plus the window before it, as if it had stayed connected in Quiet Time.
+ *
  * Nothing the watch already has is sent again: BlobDB tracks sync state per record and watch. A record
  * attempted on an earlier connection but never acknowledged (link dropped, watch said try later) is
  * retried while it is inside the window. Each watch catches up on its own, so a watch switched to also
@@ -36,6 +40,25 @@ class NotificationCatchUp(
 
     // Last fresh start per watch (PebbleIdentifier.asString), for the process lifetime.
     private val freshStarts = MutableStateFlow<Map<String, Instant>>(emptyMap())
+
+    // Host-side pauses, oldest first; the last one is open (end null) while the pause lasts.
+    private val pauses = MutableStateFlow<List<Pause>>(emptyList())
+
+    /** The host started keeping every watch disconnected at [at]. */
+    fun pauseStarted(at: Instant) {
+        pauses.update { list ->
+            if (list.lastOrNull()?.let { it.end == null } == true) list
+            else (list + Pause(at, null)).takeLast(MAX_PAUSES)
+        }
+    }
+
+    /** The pause begun by [pauseStarted] ended at [at]. */
+    fun pauseEnded(at: Instant) {
+        pauses.update { list ->
+            val open = list.lastOrNull()?.takeIf { it.end == null } ?: return@update list
+            list.dropLast(1) + open.copy(end = maxOf(open.start, at))
+        }
+    }
 
     /**
      * A connection of [watch] that began at [at] wipes the watch's databases (first connection after
@@ -54,6 +77,7 @@ class NotificationCatchUp(
         now = now,
         floor = freshStarts.value[watch.asString] ?: startedAt,
         window = notificationConfigFlow.value.missedNotificationCatchUpMs.milliseconds,
+        pauses = pauses.value,
     )
 
     /** Drops [watch]'s state once it is forgotten (a re-paired watch starts fresh anyway). */
@@ -62,10 +86,33 @@ class NotificationCatchUp(
     }
 }
 
+/** A host-side pause of all watch connections; [end] is null while it lasts. */
+internal data class Pause(val start: Instant, val end: Instant?)
+
+private const val MAX_PAUSES = 16
+
 /**
  * The catch-up rule of [NotificationCatchUp]: [now] (upstream) when [window] is not positive, else the
- * later of [floor] and [now] − [window] — but never later than [now] (a floor from a clock that has since
- * gone backwards).
+ * later of [floor] and the point [window] of unpaused time before [now] — [pauses] (oldest first, the last
+ * one possibly open) are skipped, not counted — but never later than [now] (a floor from a clock that has
+ * since gone backwards).
  */
-internal fun catchUpThreshold(now: Instant, floor: Instant, window: Duration): Instant =
-    if (window <= Duration.ZERO) now else minOf(now, maxOf(floor, now - window))
+internal fun catchUpThreshold(
+    now: Instant,
+    floor: Instant,
+    window: Duration,
+    pauses: List<Pause> = emptyList(),
+): Instant {
+    if (window <= Duration.ZERO) return now
+    // Walk back from now, spending the window only on the gaps between pauses.
+    var cursor = now
+    var left = window
+    for (pause in pauses.asReversed()) {
+        if (pause.start >= cursor) continue
+        val gap = cursor - minOf(pause.end ?: cursor, cursor)
+        if (gap >= left) break
+        left -= gap
+        cursor = pause.start
+    }
+    return minOf(now, maxOf(floor, cursor - left))
+}
