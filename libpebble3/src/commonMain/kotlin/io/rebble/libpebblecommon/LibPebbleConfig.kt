@@ -141,10 +141,10 @@ data class BleConfig(
     val filterScanResultsByUuid: Boolean = true,
     /**
      * Fork addition (stoandl, for hosts that suspend and keep the link up across it). `null` (the
-     * default) keeps the upstream behaviour: tell the watch the phone manages the LE connection
-     * parameters (`{0x00, 0x01}`), after which neither side ever changes them — the link stays at
-     * whatever it had when that write landed. Non-null lets the watch manage them with *our* parameter
-     * sets instead: [BleConnParams.idle] for all three response-time states, so it converges once and
+     * default) writes nothing, so the watch manages the LE connection parameters with its own sets.
+     * (Upstream writes "the phone manages" (`{0x00, 0x01}`), after which neither side ever changes them:
+     * the link stays at whatever it had when that write landed.) Non-null lets the watch manage them
+     * with *our* parameter sets instead: [BleConnParams.idle] for all three response-time states, so it converges once and
      * never requests a change again (each request would need the host — a wake if it is asleep); and,
      * only if [BleConnParams.fast] is set, a temporary fast MIN set during the connect handshake and
      * bulk transfers. See ConnectionParams for the details and the Linux caveats.

@@ -121,10 +121,8 @@ class PebbleBle(
             ppogPacketSenderProxy.configureForward()
         }
 
-        if (!connectionParams.subscribeAndConfigure(device)) {
-            // this can happen on some older firmwares (PRF?) and is harmless — not an error worth INFO
-            logger.d("connection params not set up (harmless on some firmwares)")
-        }
+        // Says itself why when it can't (no characteristic on Core firmware, a failed write).
+        connectionParams.subscribeAndConfigure(device)
         logger.d("done connectionParams")
 
         scope.launch {
