@@ -139,59 +139,6 @@ data class BleConfig(
      */
     val centralStateRestoration: Boolean = false,
     val filterScanResultsByUuid: Boolean = true,
-    /**
-     * Fork addition (stoandl, for hosts that suspend and keep the link up across it). `null` (the
-     * default) writes nothing, so the watch manages the LE connection parameters with its own sets.
-     * (Upstream writes "the phone manages" (`{0x00, 0x01}`), after which neither side ever changes them:
-     * the link stays at whatever it had when that write landed.) Non-null lets the watch manage them
-     * with *our* parameter sets instead: [BleConnParams.idle] for all three response-time states, so it converges once and
-     * never requests a change again (each request would need the host — a wake if it is asleep); and,
-     * only if [BleConnParams.fast] is set, a temporary fast MIN set during the connect handshake and
-     * bulk transfers. See ConnectionParams for the details and the Linux caveats.
-     */
-    val connectionParams: BleConnParams? = null,
-)
-
-/**
- * One LE connection-parameter set in the form PebbleOS's Pebble Pairing Service takes it
- * (`pbl_bt_pps_conn_param_set`): interval range, slave latency, supervision timeout.
- * Limits (checked by [validate]): finite, 7.5 ms ≤ min ≤ max ≤ 4 s, max − min ≤ 318.75 ms (one byte of
- * 1.25 ms steps), latency 0..255, supervision 100 ms..7.65 s (one byte of 30 ms steps) and longer
- * than 2 × (1 + latency) × max interval (the Bluetooth spec rule the Linux host also enforces).
- */
-@Serializable
-data class BleConnParamSet(
-    val minIntervalMs: Double,
-    val maxIntervalMs: Double,
-    val slaveLatency: Int,
-    val supervisionTimeoutMs: Int,
-) {
-    /** Human-readable problem with this set, or null when PebbleOS and the Linux host accept it. */
-    fun validate(): String? = when {
-        // NaN passes every comparison below, then fails encode()'s roundToInt() on every connect.
-        !minIntervalMs.isFinite() || !maxIntervalMs.isFinite() -> "intervals must be numbers"
-        minIntervalMs < 7.5 -> "min interval ${minIntervalMs}ms < 7.5ms"
-        maxIntervalMs < minIntervalMs -> "max interval ${maxIntervalMs}ms < min ${minIntervalMs}ms"
-        maxIntervalMs > 4000.0 -> "max interval ${maxIntervalMs}ms > 4000ms"
-        (maxIntervalMs - minIntervalMs) / 1.25 > 255 -> "max - min > 318.75ms (does not fit the watch's one-byte delta)"
-        slaveLatency !in 0..255 -> "slave latency $slaveLatency outside 0..255"
-        supervisionTimeoutMs !in 100..7650 -> "supervision ${supervisionTimeoutMs}ms outside 100..7650ms"
-        supervisionTimeoutMs <= 2 * (1 + slaveLatency) * maxIntervalMs ->
-            "supervision ${supervisionTimeoutMs}ms must exceed 2 x (1 + latency) x max interval"
-        else -> null
-    }
-
-    override fun toString(): String =
-        "${fmt(minIntervalMs)}-${fmt(maxIntervalMs)}ms/lat $slaveLatency/sup ${supervisionTimeoutMs}ms"
-
-    private fun fmt(ms: Double): String = if (ms % 1.0 == 0.0) ms.toLong().toString() else ms.toString()
-}
-
-/** See [BleConfig.connectionParams]. */
-@Serializable
-data class BleConnParams(
-    val idle: BleConnParamSet,
-    val fast: BleConnParamSet? = null,
 )
 
 class BleConfigFlow(val flow: StateFlow<LibPebbleConfig>) {
