@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.update
  * Fork addition (stoandl, for hosts that suspend aggressively — e.g. an s2idle phone that keeps the
  * BLE link up inside the controller while the SoC sleeps). One process-wide view of watch traffic
  * that is still owed or awaited, written by the per-connection transport/BlobDB code and read by the
- * host app, plus the host's "about to suspend" hint that the connection-parameter logic reacts to.
+ * host app, plus the host's "about to suspend" hint.
  *
  * Why the host needs it: a phone that wakes for a push message has a few seconds before it suspends
  * again. The notification that push produced goes out through BlobDB → PPoG, and if the system
@@ -36,8 +36,7 @@ class WatchLinkActivity {
 
     /**
      * Set by the host between logind's `PrepareForSleep(true)` and the matching `PrepareForSleep(false)`.
-     * The connection-parameter logic drops any temporary fast parameter set when this turns true, so a
-     * link never sleeps in the bulk-transfer state (see ConnectionParams).
+     * libpebble3 doesn't read it; the host does, to hold off new link work (e.g. discovery) until the resume.
      */
     val hostSuspending: StateFlow<Boolean> = _hostSuspending.asStateFlow()
 

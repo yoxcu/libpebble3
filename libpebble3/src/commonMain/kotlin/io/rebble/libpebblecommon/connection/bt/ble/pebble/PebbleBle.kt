@@ -121,7 +121,7 @@ class PebbleBle(
             ppogPacketSenderProxy.configureForward()
         }
 
-        // Says itself why when it can't (no characteristic on Core firmware, a failed write).
+        // Says itself when the watch has no characteristic (Core firmware).
         connectionParams.subscribeAndConfigure(device)
         logger.d("done connectionParams")
 
