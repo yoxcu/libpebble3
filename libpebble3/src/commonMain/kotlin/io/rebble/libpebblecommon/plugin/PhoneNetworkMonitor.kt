@@ -26,7 +26,7 @@ object Connections {
 }
 
 /** The vocabulary both platforms report in, since a watchface may well match on it. */
-internal object CellGenerations {
+object CellGenerations {
     const val NONE = "None"
     const val TWO_G = "2G"
     const val THREE_G = "3G"

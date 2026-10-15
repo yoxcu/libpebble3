@@ -1,10 +1,13 @@
 package io.rebble.libpebblecommon.plugin
 
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flowOf
 
-/** JVM target stub — no phone radios to surface. */
-actual class PhoneNetworkMonitor {
-    actual val cellGeneration: Flow<String?> = flowOf(null)
-    actual val connection: Flow<String?> = flowOf(null)
-}
+/**
+ * The phone's connectivity as the host reads it (stoandl: NetworkManager / ModemManager), for
+ * [PhoneStatePlugin]. [cellGeneration] is one of [CellGenerations], [connection] one of
+ * [Connections]; each emits null when the host can't say (no modem, say).
+ */
+actual class PhoneNetworkMonitor(
+    actual val cellGeneration: Flow<String?>,
+    actual val connection: Flow<String?>,
+)

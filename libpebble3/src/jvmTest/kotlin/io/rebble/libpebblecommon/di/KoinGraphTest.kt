@@ -47,6 +47,9 @@ import io.rebble.libpebblecommon.metadata.WatchColor
 import io.rebble.libpebblecommon.music.SystemMusicControl
 import io.rebble.libpebblecommon.notification.NotificationListenerConnection
 import io.rebble.libpebblecommon.packets.PhoneAppVersion
+import io.rebble.libpebblecommon.plugin.PhoneBatteryMonitor
+import io.rebble.libpebblecommon.plugin.PhoneNetworkMonitor
+import io.rebble.libpebblecommon.plugin.PlatformPlugins
 import io.rebble.libpebblecommon.stoandlConfigDir
 import io.rebble.libpebblecommon.time.TimeChanged
 import io.rebble.libpebblecommon.util.SystemGeolocation
@@ -56,6 +59,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.io.files.Path
 import kotlinx.serialization.json.Json
@@ -122,6 +126,9 @@ class KoinGraphTest {
         single { PlatformFlags(PhoneAppVersion.PlatformFlag.makeFlags(PhoneAppVersion.OSType.Android, emptyList())) }
         single { PhoneCapabilities(CommonPhoneCapabilities) }
         single<NotificationImageProvider> { NoNotificationImages() }
+        single { PhoneBatteryMonitor(batteryLevel = flowOf(null)) }
+        single { PhoneNetworkMonitor(cellGeneration = flowOf(null), connection = flowOf(null)) }
+        single { PlatformPlugins(emptySet()) }
         single<SystemCallLog> { stub<SystemCallLog>() }
         single<SystemMusicControl> { stub<SystemMusicControl>() }
         single<SystemCalendar> { stub<SystemCalendar>() }

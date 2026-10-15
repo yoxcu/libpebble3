@@ -18,9 +18,6 @@ import io.rebble.libpebblecommon.database.entity.BaseAction
 import io.rebble.libpebblecommon.database.entity.TimelinePin
 import io.rebble.libpebblecommon.notification.NotificationAppsSync
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
-import io.rebble.libpebblecommon.plugin.PhoneBatteryMonitor
-import io.rebble.libpebblecommon.plugin.PhoneNetworkMonitor
-import io.rebble.libpebblecommon.plugin.PlatformPlugins
 import io.rebble.libpebblecommon.services.blobdb.TimelineActionResult
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -89,16 +86,11 @@ actual val platformModule: Module = module {
     // holds for NotificationListenerConnection, PlatformNotificationActionHandler, SystemCallLog and
     // SystemGeolocation. See the stoandl fork-nop-ownership convention.
 
-    // Plugin hooks commonMain needs on every platform. Upstream's JVM module is a TODO(), so nothing
-    // upstream catches a gap here: without them koin.get<LibPebble>() crashes at startup (see
-    // KoinGraphTest). PhoneStatePlugin reads the phone's battery/radio; the JVM actuals are
-    // upstream's null-emitting stubs. Backing them with UPower/ModemManager would be a feature of
-    // its own, not part of a bump, and is only visible through plugins (enablePlugins, default off).
-    single { PhoneBatteryMonitor() }
-    single { PhoneNetworkMonitor() }
-    // No platform-only plugins on JVM (same as iOS). MusicPlugin is commonMain and could sit on the
-    // daemon's MPRIS SystemMusicControl, but that's a feature of its own, not part of a bump.
-    single { PlatformPlugins(emptySet()) }
+    // No PhoneBatteryMonitor / PhoneNetworkMonitor / PlatformPlugins here: the phone's battery and
+    // radios are the host's to read (stoandl: UPower, NetworkManager/ModemManager) and its built-in
+    // plugin set the host's to choose, and stoandl binds all three unconditionally. A missing one
+    // fails fast (KoinGraphTest) instead of PhoneStatePlugin reporting nothing.
+
     // No NotificationImageProvider here: the daemon serves notification pictures itself (stoandl
     // NotificationImageStore) and binds it unconditionally.
 
