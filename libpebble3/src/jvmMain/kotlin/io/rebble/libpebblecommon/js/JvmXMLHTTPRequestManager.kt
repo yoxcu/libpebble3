@@ -2,6 +2,8 @@ package io.rebble.libpebblecommon.js
 
 import co.touchlab.kermit.Logger
 import io.rebble.libpebblecommon.metadata.pbw.appinfo.PbwAppInfo
+import io.rebble.libpebblecommon.permissions.NetworkAccess
+import io.rebble.libpebblecommon.plugin.PluginNetworkVerdict
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExecutorCoroutineDispatcher
@@ -25,6 +27,8 @@ class JvmXMLHTTPRequestManager(
     private val jsThread: ExecutorCoroutineDispatcher,
     private val evalFn: (String) -> Unit,
     appInfo: PbwAppInfo,
+    /** The app's network permission, as commonMain's XMLHTTPRequestManager checks it. */
+    private val networkAccess: NetworkAccess,
 ) {
     private val logger = Logger.withTag("JvmXHR-${appInfo.longName}")
     private val idCounter = AtomicInteger(0)
@@ -70,6 +74,15 @@ class JvmXMLHTTPRequestManager(
         val state = opened.copy(headers = opened.headers.toMutableMap())
         val job = scope.launch(Dispatchers.IO) {
             try {
+                // As upstream's manager: without waiting for an answer, so a first request to an
+                // unapproved host fails and leaves a request for the user. A no-op (http/https/ws/wss
+                // only) until plugins are enabled.
+                val verdict = networkAccess.check(state.url, wait = false)
+                if (verdict is PluginNetworkVerdict.Denied) {
+                    logger.w { "XHR $instanceId blocked: ${verdict.reason}" }
+                    dispatchError(instanceId)
+                    return@launch
+                }
                 val bodyPublisher = if (body != null && body.isNotEmpty())
                     HttpRequest.BodyPublishers.ofString(body)
                 else
@@ -114,19 +127,21 @@ class JvmXMLHTTPRequestManager(
                 }
             } catch (e: Exception) {
                 logger.e(e) { "XHR failed for $instanceId: ${state.url}" }
-                withContext(jsThread) {
-                    evalFn("""(function(){
-                        var xhr=XMLHttpRequest._instances.get($instanceId);
-                        if(!xhr)return;
-                        xhr._dispatchEvent('error',{type:'error'});
-                        xhr._dispatchEvent('loadend',{});
-                    })();""")
-                }
+                dispatchError(instanceId)
             } finally {
                 jobs.remove(instanceId)
             }
         }
         jobs[instanceId] = job
+    }
+
+    private suspend fun dispatchError(instanceId: Int) = withContext(jsThread) {
+        evalFn("""(function(){
+            var xhr=XMLHttpRequest._instances.get($instanceId);
+            if(!xhr)return;
+            xhr._dispatchEvent('error',{type:'error'});
+            xhr._dispatchEvent('loadend',{});
+        })();""")
     }
 
     fun abort(instanceId: Int) {

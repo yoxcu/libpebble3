@@ -3,6 +3,7 @@ package io.rebble.libpebblecommon.js
 import com.sun.net.httpserver.HttpServer
 import io.rebble.libpebblecommon.LibPebbleConfig
 import io.rebble.libpebblecommon.NotificationConfigFlow
+import io.rebble.libpebblecommon.WatchConfig
 import io.rebble.libpebblecommon.WatchConfigFlow
 import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
@@ -99,9 +100,9 @@ class GraalJsRunnerTest {
         tempDir.toFile().deleteRecursively()
     }
 
-    private fun runner(appJs: String): GraalJsRunner {
+    private fun runner(appJs: String, legacy: Boolean = true): GraalJsRunner {
         val uuid = Uuid.random()
-        val permissions = testPermissions(watchConfig)
+        val permissions = testPermissions(watchConfig, legacy)
         val jsFile = tempDir.resolve("$uuid.js").apply { writeText(appJs) }
         val remoteTimeline = RemoteTimelineEmulator(watchConfig, Json, stub(), stub(), permissions)
         val watch = fakeWatch(connected = true) as ConnectedPebbleDevice
@@ -278,6 +279,40 @@ class GraalJsRunnerTest {
     }
 
     @Test
+    fun xhrObeysTheNetworkPermissionOncePluginsAreEnabled() = runBlocking<Unit> {
+        config.value = LibPebbleConfig(watchConfig = WatchConfig(enablePlugins = true))
+        val requests = CopyOnWriteArrayList<String>()
+        val server = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0).apply {
+            createContext("/") { exchange ->
+                requests += exchange.requestURI.path
+                exchange.sendResponseHeaders(200, 2)
+                exchange.responseBody.use { it.write("ok".toByteArray()) }
+            }
+            start()
+        }
+        try {
+            fun app(path: String) = """
+                var xhr = new XMLHttpRequest();
+                xhr.onload = function() { globalThis.outcome = 'loaded ' + xhr.responseText; };
+                xhr.onerror = function() { globalThis.outcome = 'refused'; };
+                xhr.open('GET', 'http://127.0.0.1:${server.address.port}/$path');
+                xhr.send();
+            """.trimIndent()
+            // A manifest-v2 app must be granted LocalNetwork first; nobody has answered yet.
+            val v2 = runner(app("v2"), legacy = false)
+            v2.start()
+            assertEquals("refused", v2.awaitJs("globalThis.outcome"))
+            // A legacy app keeps its implicit GlobalInternet.
+            val legacy = runner(app("legacy"))
+            legacy.start()
+            assertEquals("loaded ok", legacy.awaitJs("globalThis.outcome"))
+            assertEquals(listOf("/legacy"), requests.toList())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun consoleTraceDoesNotThrow() = runBlocking<Unit> {
         val runner = runner("console.trace('traced'); globalThis.afterTrace = true;")
         runner.start()
@@ -318,8 +353,13 @@ internal fun testPermissions(watchConfig: WatchConfigFlow, legacy: Boolean = tru
     val dao = Proxy.newProxyInstance(
         LockerAppPermissionDao::class.java.classLoader,
         arrayOf(LockerAppPermissionDao::class.java),
-    ) { _, m, _ -> if (m.name == "getByAppUuid") emptyList<Any>() else throw UnsupportedOperationException(m.name) }
-        as LockerAppPermissionDao
+    ) { _, m, _ ->
+        when (m.name) {
+            "getByAppUuid" -> emptyList<Any>()
+            "insertIfAbsent" -> Unit // a use or a pending request, recorded once enforcing
+            else -> throw UnsupportedOperationException(m.name)
+        }
+    } as LockerAppPermissionDao
     val installed = object : InstalledApps {
         override fun subjectsOf(appUuids: Set<Uuid>) =
             flowOf(appUuids.associateWith { PermissionSubject(it, legacy = legacy) })

@@ -85,7 +85,7 @@ class GraalJsRunner(
             jsContext = ctx
 
             val bindings = ctx.getBindings("js")
-            val xhrManager = JvmXMLHTTPRequestManager(jsScope, jsThread, evalFn, appInfo)
+            val xhrManager = JvmXMLHTTPRequestManager(jsScope, jsThread, evalFn, appInfo, networkAccess)
             val timeoutManager = JvmJSTimeout(jsScope, jsThread, evalFn)
             val pkjsIface = JvmPKJSInterface(this@GraalJsRunner, device, libPebble, jsTokenUtil)
             val privatePkjsIface = JvmPrivatePKJSInterface(
