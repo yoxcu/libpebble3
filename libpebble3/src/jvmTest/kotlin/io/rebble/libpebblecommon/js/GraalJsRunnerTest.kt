@@ -8,11 +8,21 @@ import io.rebble.libpebblecommon.connection.AppContext
 import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.FakeAppMessages
 import io.rebble.libpebblecommon.connection.FakeLibPebble
+import io.rebble.libpebblecommon.connection.PebbleConnectionEvent
+import io.rebble.libpebblecommon.connection.PebbleDevice
+import io.rebble.libpebblecommon.connection.Watches
 import io.rebble.libpebblecommon.connection.fakeWatch
+import io.rebble.libpebblecommon.database.dao.LockerAppPermissionDao
 import io.rebble.libpebblecommon.database.entity.LockerEntry
+import io.rebble.libpebblecommon.di.LibPebbleCoroutineScope
 import io.rebble.libpebblecommon.di.stub
 import io.rebble.libpebblecommon.metadata.pbw.appinfo.PbwAppInfo
 import io.rebble.libpebblecommon.metadata.pbw.appinfo.Resources
+import io.rebble.libpebblecommon.permissions.AppPermissions
+import io.rebble.libpebblecommon.permissions.InstalledApps
+import io.rebble.libpebblecommon.permissions.PermissionSubject
+import io.rebble.libpebblecommon.permissions.PluginDefinedPermission
+import io.rebble.libpebblecommon.permissions.RunningApps
 import io.rebble.libpebblecommon.plugin.PluginRegistry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -21,9 +31,11 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -32,18 +44,21 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.ByteArrayOutputStream
+import java.lang.reflect.Proxy
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.zip.GZIPOutputStream
 import kotlin.io.path.writeText
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.time.Clock
 import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
 
@@ -84,30 +99,9 @@ class GraalJsRunnerTest {
         tempDir.toFile().deleteRecursively()
     }
 
-    private fun permissionsFor(uuid: Uuid): io.rebble.libpebblecommon.permissions.AppPermissions {
-        val dao = java.lang.reflect.Proxy.newProxyInstance(
-            io.rebble.libpebblecommon.database.dao.LockerAppPermissionDao::class.java.classLoader,
-            arrayOf(io.rebble.libpebblecommon.database.dao.LockerAppPermissionDao::class.java),
-        ) { _, m, _ -> if (m.name == "getByAppUuid") emptyList<Any>() else throw UnsupportedOperationException(m.name) }
-            as io.rebble.libpebblecommon.database.dao.LockerAppPermissionDao
-        val installed = object : io.rebble.libpebblecommon.permissions.InstalledApps {
-            override fun subjectsOf(appUuids: Set<Uuid>) = kotlinx.coroutines.flow.flowOf(
-                appUuids.associateWith { io.rebble.libpebblecommon.permissions.PermissionSubject(it, legacy = true) })
-            override fun pluginPermissions() = kotlinx.coroutines.flow.flowOf(emptyMap<String, io.rebble.libpebblecommon.permissions.PluginDefinedPermission>())
-        }
-        val noWatches = object : io.rebble.libpebblecommon.connection.Watches {
-            override val watches = MutableStateFlow(emptyList<io.rebble.libpebblecommon.connection.PebbleDevice>())
-            override val connectionEvents = kotlinx.coroutines.flow.emptyFlow<io.rebble.libpebblecommon.connection.PebbleConnectionEvent>()
-            override fun watchesDebugState() = ""
-        }
-        return io.rebble.libpebblecommon.permissions.AppPermissions(dao, installed, watchConfig, kotlin.time.Clock.System,
-            io.rebble.libpebblecommon.permissions.RunningApps(noWatches),
-            io.rebble.libpebblecommon.di.LibPebbleCoroutineScope(kotlin.coroutines.EmptyCoroutineContext))
-    }
-
     private fun runner(appJs: String): GraalJsRunner {
         val uuid = Uuid.random()
-        val permissions = permissionsFor(uuid)
+        val permissions = testPermissions(watchConfig)
         val jsFile = tempDir.resolve("$uuid.js").apply { writeText(appJs) }
         val remoteTimeline = RemoteTimelineEmulator(watchConfig, Json, stub(), stub(), permissions)
         val watch = fakeWatch(connected = true) as ConnectedPebbleDevice
@@ -127,11 +121,7 @@ class GraalJsRunnerTest {
             notificationConfigFlow = NotificationConfigFlow(config),
             pluginRegistry = PluginRegistry(emptySet(), watchConfig),
             permissions = permissions,
-            runningApps = io.rebble.libpebblecommon.permissions.RunningApps(object : io.rebble.libpebblecommon.connection.Watches {
-                override val watches = MutableStateFlow(emptyList<io.rebble.libpebblecommon.connection.PebbleDevice>())
-                override val connectionEvents = kotlinx.coroutines.flow.emptyFlow<io.rebble.libpebblecommon.connection.PebbleConnectionEvent>()
-                override fun watchesDebugState() = ""
-            }),
+            runningApps = RunningApps(NoWatches),
         ).also { runners += it }
     }
 
@@ -310,6 +300,33 @@ class GraalJsRunnerTest {
         // Generous: a GraalJS context in interpreter mode takes a while to warm up on a busy host.
         val TIMEOUT = 20.seconds
     }
+}
+
+/** No watch is ever connected. */
+internal object NoWatches : Watches {
+    override val watches = MutableStateFlow(emptyList<PebbleDevice>())
+    override val connectionEvents = emptyFlow<PebbleConnectionEvent>()
+    override fun watchesDebugState() = ""
+}
+
+/**
+ * A real [AppPermissions] over an empty permission table: every app is installed, as a legacy
+ * (pre-manifest-v2) app unless [legacy] is false, and permissions are enforced only when
+ * [watchConfig] enables plugins.
+ */
+internal fun testPermissions(watchConfig: WatchConfigFlow, legacy: Boolean = true): AppPermissions {
+    val dao = Proxy.newProxyInstance(
+        LockerAppPermissionDao::class.java.classLoader,
+        arrayOf(LockerAppPermissionDao::class.java),
+    ) { _, m, _ -> if (m.name == "getByAppUuid") emptyList<Any>() else throw UnsupportedOperationException(m.name) }
+        as LockerAppPermissionDao
+    val installed = object : InstalledApps {
+        override fun subjectsOf(appUuids: Set<Uuid>) =
+            flowOf(appUuids.associateWith { PermissionSubject(it, legacy = legacy) })
+        override fun pluginPermissions() = flowOf(emptyMap<String, PluginDefinedPermission>())
+    }
+    return AppPermissions(dao, installed, watchConfig, Clock.System, RunningApps(NoWatches),
+        LibPebbleCoroutineScope(EmptyCoroutineContext))
 }
 
 internal fun testAppInfo(uuid: Uuid) = PbwAppInfo(
