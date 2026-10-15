@@ -16,8 +16,6 @@ import io.rebble.libpebblecommon.contacts.SystemContact
 import io.rebble.libpebblecommon.contacts.SystemContacts
 import io.rebble.libpebblecommon.database.entity.BaseAction
 import io.rebble.libpebblecommon.database.entity.TimelinePin
-import io.rebble.libpebblecommon.imaging.NoNotificationImages
-import io.rebble.libpebblecommon.imaging.NotificationImageProvider
 import io.rebble.libpebblecommon.notification.NotificationAppsSync
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
 import io.rebble.libpebblecommon.plugin.PhoneBatteryMonitor
@@ -101,9 +99,8 @@ actual val platformModule: Module = module {
     // No platform-only plugins on JVM (same as iOS). MusicPlugin is commonMain and could sit on the
     // daemon's MPRIS SystemMusicControl, but that's a feature of its own, not part of a bump.
     single { PlatformPlugins(emptySet()) }
-    // No notification images on Linux (yet): registers nothing, so the watch is told the image type
-    // is unsupported and stops asking.
-    single<NotificationImageProvider> { NoNotificationImages() }
+    // No NotificationImageProvider here: the daemon serves notification pictures itself (stoandl
+    // NotificationImageStore) and binds it unconditionally.
 
     single<LegacyPhoneReceiver> {
         object : LegacyPhoneReceiver {

@@ -35,6 +35,8 @@ import io.rebble.libpebblecommon.connection.fakeWatch
 import io.rebble.libpebblecommon.database.DATABASE_FILENAME
 import io.rebble.libpebblecommon.database.Database
 import io.rebble.libpebblecommon.database.getRoomDatabase
+import io.rebble.libpebblecommon.imaging.NoNotificationImages
+import io.rebble.libpebblecommon.imaging.NotificationImageProvider
 import io.rebble.libpebblecommon.js.CompanionAppDevice
 import io.rebble.libpebblecommon.js.GraalJsRunner
 import io.rebble.libpebblecommon.js.InjectedPKJSHttpInterceptors
@@ -119,6 +121,7 @@ class KoinGraphTest {
         single<TimeChanged> { stub<TimeChanged>() }
         single { PlatformFlags(PhoneAppVersion.PlatformFlag.makeFlags(PhoneAppVersion.OSType.Android, emptyList())) }
         single { PhoneCapabilities(CommonPhoneCapabilities) }
+        single<NotificationImageProvider> { NoNotificationImages() }
         single<SystemCallLog> { stub<SystemCallLog>() }
         single<SystemMusicControl> { stub<SystemMusicControl>() }
         single<SystemCalendar> { stub<SystemCalendar>() }
