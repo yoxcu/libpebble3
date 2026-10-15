@@ -117,6 +117,15 @@ class JsPlugin(
         awaitClose { job.cancel() }
     }
 
+    /**
+     * Re-read every source now. Subscriptions otherwise wait out their refresh interval on the coroutine
+     * clock, which doesn't advance while the host is suspended, so a phone that wakes after an hour would
+     * keep serving the hour-old envelope for another interval. The host calls this on resume.
+     */
+    fun refreshAllSources() {
+        sources.forEach { s -> s.items.forEach { refreshRequests.tryEmit("${s.category}/$it") } }
+    }
+
     override suspend fun invoke(action: String, args: JsonObject): ActionResult {
         val raw = request("""{"kind":"action","action":${quote(action)},"args":$args}""")
             ?: return ActionResult.error(PluginErrors.TIMEOUT, "plugin did not respond")
