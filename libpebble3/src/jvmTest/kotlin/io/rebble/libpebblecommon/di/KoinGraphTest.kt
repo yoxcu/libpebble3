@@ -21,6 +21,7 @@ import io.rebble.libpebblecommon.connection.ConnectedPebbleDevice
 import io.rebble.libpebblecommon.connection.CreatePlatformIdentifier
 import io.rebble.libpebblecommon.connection.FakeAppMessages
 import io.rebble.libpebblecommon.connection.LibPebble
+import io.rebble.libpebblecommon.connection.PhoneCapabilities
 import io.rebble.libpebblecommon.connection.PlatformFlags
 import io.rebble.libpebblecommon.connection.TokenProvider
 import io.rebble.libpebblecommon.connection.WebServices
@@ -117,6 +118,7 @@ class KoinGraphTest {
         single<PlatformNotificationActionHandler> { stub<PlatformNotificationActionHandler>() }
         single<TimeChanged> { stub<TimeChanged>() }
         single { PlatformFlags(PhoneAppVersion.PlatformFlag.makeFlags(PhoneAppVersion.OSType.Android, emptyList())) }
+        single { PhoneCapabilities(CommonPhoneCapabilities) }
         single<SystemCallLog> { stub<SystemCallLog>() }
         single<SystemMusicControl> { stub<SystemMusicControl>() }
         single<SystemCalendar> { stub<SystemCalendar>() }

@@ -6,8 +6,6 @@ import io.rebble.libpebblecommon.calls.LegacyPhoneReceiver
 import io.rebble.libpebblecommon.calendar.PlatformCalendarActionHandler
 import io.rebble.libpebblecommon.connection.OtherPebbleApp
 import io.rebble.libpebblecommon.connection.OtherPebbleApps
-import io.rebble.libpebblecommon.connection.PhoneCapabilities
-import io.rebble.libpebblecommon.connection.PlatformFlags
 import io.rebble.libpebblecommon.connection.bt.ble.BlePlatformConfig
 import io.rebble.libpebblecommon.connection.bt.classic.pebble.BtClassicConnector
 import io.rebble.libpebblecommon.connection.bt.classic.transport.BluezBtClassicConnector
@@ -21,8 +19,6 @@ import io.rebble.libpebblecommon.database.entity.TimelinePin
 import io.rebble.libpebblecommon.imaging.NoNotificationImages
 import io.rebble.libpebblecommon.imaging.NotificationImageProvider
 import io.rebble.libpebblecommon.notification.NotificationAppsSync
-import io.rebble.libpebblecommon.packets.PhoneAppVersion
-import io.rebble.libpebblecommon.packets.ProtocolCapsFlag
 import io.rebble.libpebblecommon.packets.blobdb.TimelineIcon
 import io.rebble.libpebblecommon.plugin.PhoneBatteryMonitor
 import io.rebble.libpebblecommon.plugin.PhoneNetworkMonitor
@@ -36,19 +32,9 @@ import org.koin.core.module.Module
 import org.koin.dsl.module
 
 actual val platformModule: Module = module {
-    single {
-        PhoneCapabilities(
-            CommonPhoneCapabilities + setOf(
-                ProtocolCapsFlag.SupportsExtendedMusicProtocol,
-            )
-        )
-    }
-
-    single {
-        PlatformFlags(
-            PhoneAppVersion.PlatformFlag.makeFlags(PhoneAppVersion.OSType.Unknown, emptyList())
-        )
-    }
+    // No PhoneCapabilities / PlatformFlags here: what the phone claims to the watch (capability bits, OS
+    // type) is the daemon's to decide, and it binds both unconditionally (stoandl watchClaims). A missing
+    // binding fails fast in KoinGraphTest rather than silently claiming too little.
 
     single {
         BlePlatformConfig(
@@ -116,8 +102,7 @@ actual val platformModule: Module = module {
     // daemon's MPRIS SystemMusicControl, but that's a feature of its own, not part of a bump.
     single { PlatformPlugins(emptySet()) }
     // No notification images on Linux (yet): registers nothing, so the watch is told the image type
-    // is unsupported and stops asking. PhoneCapabilities above deliberately leaves out
-    // SupportsImageFetch; serving images or album art means overriding both.
+    // is unsupported and stops asking.
     single<NotificationImageProvider> { NoNotificationImages() }
 
     single<LegacyPhoneReceiver> {
