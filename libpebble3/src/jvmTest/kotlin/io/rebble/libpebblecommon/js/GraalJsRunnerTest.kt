@@ -84,15 +84,37 @@ class GraalJsRunnerTest {
         tempDir.toFile().deleteRecursively()
     }
 
+    private fun permissionsFor(uuid: Uuid): io.rebble.libpebblecommon.permissions.AppPermissions {
+        val dao = java.lang.reflect.Proxy.newProxyInstance(
+            io.rebble.libpebblecommon.database.dao.LockerAppPermissionDao::class.java.classLoader,
+            arrayOf(io.rebble.libpebblecommon.database.dao.LockerAppPermissionDao::class.java),
+        ) { _, m, _ -> if (m.name == "getByAppUuid") emptyList<Any>() else throw UnsupportedOperationException(m.name) }
+            as io.rebble.libpebblecommon.database.dao.LockerAppPermissionDao
+        val installed = object : io.rebble.libpebblecommon.permissions.InstalledApps {
+            override fun subjectsOf(appUuids: Set<Uuid>) = kotlinx.coroutines.flow.flowOf(
+                appUuids.associateWith { io.rebble.libpebblecommon.permissions.PermissionSubject(it, legacy = true) })
+            override fun pluginPermissions() = kotlinx.coroutines.flow.flowOf(emptyMap<String, io.rebble.libpebblecommon.permissions.PluginDefinedPermission>())
+        }
+        val noWatches = object : io.rebble.libpebblecommon.connection.Watches {
+            override val watches = MutableStateFlow(emptyList<io.rebble.libpebblecommon.connection.PebbleDevice>())
+            override val connectionEvents = kotlinx.coroutines.flow.emptyFlow<io.rebble.libpebblecommon.connection.PebbleConnectionEvent>()
+            override fun watchesDebugState() = ""
+        }
+        return io.rebble.libpebblecommon.permissions.AppPermissions(dao, installed, watchConfig, kotlin.time.Clock.System,
+            io.rebble.libpebblecommon.permissions.RunningApps(noWatches),
+            io.rebble.libpebblecommon.di.LibPebbleCoroutineScope(kotlin.coroutines.EmptyCoroutineContext))
+    }
+
     private fun runner(appJs: String): GraalJsRunner {
         val uuid = Uuid.random()
+        val permissions = permissionsFor(uuid)
         val jsFile = tempDir.resolve("$uuid.js").apply { writeText(appJs) }
-        val remoteTimeline = RemoteTimelineEmulator(watchConfig, Json, stub(), stub())
+        val remoteTimeline = RemoteTimelineEmulator(watchConfig, Json, stub(), stub(), permissions)
         val watch = fakeWatch(connected = true) as ConnectedPebbleDevice
         return GraalJsRunner(
             appContext = AppContext(),
             libPebble = FakeLibPebble(),
-            jsTokenUtil = JsTokenUtil(stub(), stub(), watchConfig),
+            jsTokenUtil = JsTokenUtil(stub(), stub(), watchConfig, permissions),
             device = CompanionAppDevice(watch.identifier, watch.watchInfo, FakeAppMessages()),
             scope = scope,
             appInfo = testAppInfo(uuid),
@@ -104,6 +126,12 @@ class GraalJsRunnerTest {
             httpInterceptorManager = HttpInterceptorManager(remoteTimeline, InjectedPKJSHttpInterceptors(listOf(interceptor))),
             notificationConfigFlow = NotificationConfigFlow(config),
             pluginRegistry = PluginRegistry(emptySet(), watchConfig),
+            permissions = permissions,
+            runningApps = io.rebble.libpebblecommon.permissions.RunningApps(object : io.rebble.libpebblecommon.connection.Watches {
+                override val watches = MutableStateFlow(emptyList<io.rebble.libpebblecommon.connection.PebbleDevice>())
+                override val connectionEvents = kotlinx.coroutines.flow.emptyFlow<io.rebble.libpebblecommon.connection.PebbleConnectionEvent>()
+                override fun watchesDebugState() = ""
+            }),
         ).also { runners += it }
     }
 

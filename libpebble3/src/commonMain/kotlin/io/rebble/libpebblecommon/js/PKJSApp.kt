@@ -181,15 +181,16 @@ class PKJSApp(
         }
         // Apps can declare "configurable" and never call Pebble.openURL(), so this must be bounded.
         val received = try {
-            withTimeoutOrNull(CONFIGURATION_URL_TIMEOUT) { url.await() } ?: run {
-                logger.e { "Timed out waiting for configuration URL" }
-                null
-            }
+            withTimeoutOrNull(CONFIGURATION_URL_TIMEOUT) { url.await() }
         } finally {
-            // Also when the caller cancels (e.g. its own shorter timeout), which skips the branch
-            // above: an orphaned receive() in runningScope would take the next request's URL.
+            // Also when the caller cancels (e.g. its own shorter timeout): an orphaned receive()
+            // in runningScope would take the next request's URL.
             url.cancel()
-        } ?: return null
+        }
+        if (received == null) {
+            logger.e { "Timed out waiting for configuration URL" }
+            return null
+        }
         return if (jsRunner.mayOpen(received)) received else null
     }
 

@@ -7,6 +7,10 @@ import io.rebble.libpebblecommon.connection.LibPebble
 import io.rebble.libpebblecommon.database.entity.LockerEntry
 import io.rebble.libpebblecommon.metadata.pbw.appinfo.PbwAppInfo
 import io.rebble.libpebblecommon.plugin.PluginRegistry
+import io.rebble.libpebblecommon.permissions.AppPermissions
+import io.rebble.libpebblecommon.permissions.NetworkGate
+import io.rebble.libpebblecommon.permissions.RunningApps
+import kotlin.uuid.Uuid
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
@@ -48,7 +52,11 @@ class GraalJsRunner(
     private val httpInterceptorManager: HttpInterceptorManager,
     private val notificationConfigFlow: NotificationConfigFlow,
     private val pluginRegistry: PluginRegistry,
+    private val permissions: AppPermissions,
+    private val runningApps: RunningApps,
 ) : JsRunner(appInfo, lockerEntry, jsPath, device, urlOpenRequests) {
+
+    override val networkAccess = NetworkGate(permissions, appInfo.shortName, Uuid.parse(appInfo.uuid))
 
     private val jsExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(null, r, "JSRunner-${appInfo.uuid}", 4 * 1024 * 1024)
@@ -84,6 +92,7 @@ class GraalJsRunner(
                 this@GraalJsRunner, device, jsScope,
                 _outgoingAppMessages, logMessages, jsTokenUtil,
                 remoteTimelineEmulator, httpInterceptorManager, notificationConfigFlow, pluginRegistry,
+                permissions, runningApps,
             )
             val localStorage = GraalJSLocalStorageInterface(appInfo.uuid, appContext)
 
@@ -270,7 +279,7 @@ class GraalJsRunner(
 class GraalGeolocationInterface(
     scope: CoroutineScope,
     jsRunner: JsRunner,
-) : GeolocationInterface(scope, jsRunner)
+) : GeolocationInterface(scope, jsRunner::eval, Uuid.parse(jsRunner.appInfo.uuid))
 
 /**
  * The host members PKJS may use on each object [GraalJsRunner.start] binds: exactly what the JVM
