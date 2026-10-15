@@ -18,6 +18,7 @@ import java.net.http.HttpResponse
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.zip.GZIPInputStream
 
 class JvmXMLHTTPRequestManager(
     private val scope: CoroutineScope,
@@ -78,12 +79,19 @@ class JvmXMLHTTPRequestManager(
                     .uri(URI.create(state.url))
                     .method(state.method, bodyPublisher)
                 state.headers.forEach { (k, v) -> builder.header(k, v) }
+                // A browser owns Accept-Encoding and decodes the reply; some APIs refuse clients that don't
+                // accept compression (Brightsky's /radar answers 400).
+                builder.setHeader("Accept-Encoding", "gzip")
 
                 val response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray())
+                val bytes = if (response.headers().firstValue("Content-Encoding").orElse("").equals("gzip", ignoreCase = true))
+                    GZIPInputStream(response.body().inputStream()).use { it.readBytes() }
+                else
+                    response.body()
 
                 val responseBody = when (responseType) {
-                    "arraybuffer" -> Base64.getEncoder().encodeToString(response.body())
-                    else -> String(response.body(), Charsets.UTF_8)
+                    "arraybuffer" -> Base64.getEncoder().encodeToString(bytes)
+                    else -> String(bytes, Charsets.UTF_8)
                 }
                 val headersJson = buildJsonObject {
                     response.headers().map().entries.forEach { (k, v) ->

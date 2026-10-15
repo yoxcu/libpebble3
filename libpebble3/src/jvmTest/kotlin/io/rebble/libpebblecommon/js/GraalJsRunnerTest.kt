@@ -31,10 +31,12 @@ import kotlinx.io.files.Path
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.io.ByteArrayOutputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.zip.GZIPOutputStream
 import kotlin.io.path.writeText
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -218,6 +220,40 @@ class GraalJsRunnerTest {
             assertEquals("reply 1,reply 2", runner.awaitJs("globalThis.replies"))
             // open() starts afresh: the first request's header doesn't carry over.
             assertEquals(listOf("/first 1", "/second null"), requests.toList())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun xhrAcceptsAndDecodesGzip() = runBlocking<Unit> {
+        val server = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0).apply {
+            createContext("/") { exchange ->
+                if (exchange.requestHeaders.getFirst("Accept-Encoding")?.contains("gzip") != true) {
+                    exchange.sendResponseHeaders(400, -1)
+                    exchange.close()
+                    return@createContext
+                }
+                val body = ByteArrayOutputStream().also { out ->
+                    GZIPOutputStream(out).use { it.write("{\"radar\":[]}".toByteArray()) }
+                }.toByteArray()
+                exchange.responseHeaders.add("Content-Encoding", "gzip")
+                exchange.sendResponseHeaders(200, body.size.toLong())
+                exchange.responseBody.use { it.write(body) }
+            }
+            start()
+        }
+        try {
+            val runner = runner(
+                """
+                var xhr = new XMLHttpRequest();
+                xhr.onload = function() { globalThis.reply = xhr.status + ' ' + xhr.responseText; };
+                xhr.open('GET', 'http://127.0.0.1:${server.address.port}/radar');
+                xhr.send();
+                """.trimIndent()
+            )
+            runner.start()
+            assertEquals("200 {\"radar\":[]}", runner.awaitJs("globalThis.reply"))
         } finally {
             server.stop(0)
         }
