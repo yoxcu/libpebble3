@@ -1,0 +1,40 @@
+# Upstream's build.yml builds :androidApp/:composeApp, which this fork's settings never include;
+# it is disabled in the fork's Actions settings (not edited, so rebases stay conflict-free).
+name: stoandl JVM
+
+on:
+  push:
+    branches:
+      - "stoandl"
+      - "stoandl-*"
+  pull_request:
+
+jobs:
+  jvm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Setup JDKs
+        uses: actions/setup-java@v6.0.1
+        with:
+          distribution: 'temurin'
+          # 25 is the Kotlin toolchain for :libpebble3 (java.lang.foreign); the last one listed (21)
+          # becomes JAVA_HOME and runs Gradle and :blobdbgen.
+          java-version: |
+            25
+            21
+          cache: 'gradle'
+      - name: JVM tests
+        # The runner image exports ANDROID_HOME, which would switch settings.gradle.kts's Android
+        # gate on; blank it so this matches stoandl's composite build.
+        env:
+          ANDROID_HOME: ""
+        # Gradle doesn't scan the hosted toolcache, so name setup-java's JDK 25 for the toolchain.
+        run: ./gradlew --no-daemon -Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64 :libpebble3:jvmTest
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jvmTest-reports
+          path: libpebble3/build/reports/tests/
