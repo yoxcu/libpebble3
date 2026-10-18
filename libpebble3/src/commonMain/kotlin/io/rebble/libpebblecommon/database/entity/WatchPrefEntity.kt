@@ -16,6 +16,7 @@ import io.rebble.libpebblecommon.database.entity.QuickLaunchSetting.Companion.to
 import io.rebble.libpebblecommon.metadata.WatchType
 import io.rebble.libpebblecommon.packets.blobdb.TimelineAttribute
 import io.rebble.libpebblecommon.packets.blobdb.TimelineItem.Attribute
+import io.rebble.libpebblecommon.services.FirmwareVersion
 import io.rebble.libpebblecommon.services.blobdb.DbWrite
 import io.rebble.libpebblecommon.structmapper.SBoolean
 import io.rebble.libpebblecommon.structmapper.SFixedList
@@ -67,6 +68,12 @@ data class WatchPrefItem(
         val type = WatchPref.from(id)
         if (type == null) {
             logger.d { "Don't know how to encode watch pref key: $id" }
+            return null
+        }
+        // Fork (stoandl): older firmware rejects the key, leaving the record dirty and re-sent on every connect.
+        val minFirmware = type.minFirmware
+        if (minFirmware != null && !minFirmware.isMetBy(params.firmwareVersion)) {
+            logger.d { "Not sending watch pref $id: needs PebbleOS $minFirmware, watch runs ${params.firmwareVersion.stringVersion}" }
             return null
         }
         logger.v { "trying to insert watch pref to watch blobdb: $id / $value" }
@@ -218,6 +225,17 @@ data class QuietTimeSchedule(
     }
 }
 
+/** Fork (stoandl): a PebbleOS release; a `-suffix` build counts as its release. */
+data class WatchPrefMinFirmware(val major: Int, val minor: Int, val patch: Int = 0) {
+    fun isMetBy(firmware: FirmwareVersion): Boolean = when {
+        firmware.major != major -> firmware.major > major
+        firmware.minor != minor -> firmware.minor > minor
+        else -> firmware.patch >= patch
+    }
+
+    override fun toString(): String = if (patch == 0) "$major.$minor" else "$major.$minor.$patch"
+}
+
 sealed interface WatchPref<T> {
     val id: String
     val displayName: String
@@ -228,6 +246,13 @@ sealed interface WatchPref<T> {
     fun encodeValue(value: T): String
     fun castParent(parent: WatchPreference<*>): WatchPreference<T> = parent as WatchPreference<T>
     val isDebugSetting: Boolean
+
+    /**
+     * Fork (stoandl): the oldest PebbleOS whose settings_blob_db whitelist accepts this pref; null = any.
+     * Set for every key added to the whitelist after v4.10.0 (`git show <tag>:…/settings_blob_db.c`);
+     * keys whitelisted during the v4.9.x builds (by v4.9.184) carry none.
+     */
+    val minFirmware: WatchPrefMinFirmware? get() = null
 
     companion object {
         fun enumeratePrefs(): List<WatchPref<*>> = BoolWatchPref.entries
@@ -248,6 +273,7 @@ enum class BoolWatchPref(
     override val defaultValue: Boolean,
     override val isDebugSetting: Boolean = false,
     override val description: String? = null,
+    override val minFirmware: WatchPrefMinFirmware? = null,
 ) : WatchPref<Boolean> {
     TimezoneSourceIsManual("timezoneSource", "Timezone configured manually", false, description = "Manually configure a time zone on the watch (instead of automatcially using the time zone of the phone)"),
     Clock24h("clock24h", "24h clock", false),
@@ -266,10 +292,17 @@ enum class BoolWatchPref(
     NotificationBacklight("notifBacklight", "Notifications - Backlight", true, description = "Turn on the backlight when a notification arrives"),
     MenuScrollWrapAround("menuScrollWrapAround", "Menu Scrolling - Wrap Around", false, description = "Up button will go to the bottom of menus"),
     QuietTimeMotionBacklight("dndMotionBacklight", "Quiet Time - Motion Backlight", true, description = "Enable motion backlight during Quiet Time"),
-    QuietTimeAutoDismiss("dndAutoDismiss", "Quiet Time - Auto Dismiss", false, description = "When notifications are shown in Quiet Time, automatically dismiss them instead of leaving them on-screen"),
+    QuietTimeNotificationBacklight(
+        "dndNotificationBacklight",
+        "Quiet Time - Notification Backlight",
+        true,
+        description = "Turn on the backlight when a notification arrives during Quiet Time. Needs PebbleOS 4.41 or later.",
+        minFirmware = WatchPrefMinFirmware(4, 41),
+    ),
+    QuietTimeAutoDismiss("dndAutoDismiss", "Quiet Time - Auto Dismiss", false, description = "When notifications are shown in Quiet Time, automatically dismiss them instead of leaving them on-screen", minFirmware = WatchPrefMinFirmware(4, 37)),
     MusicShowVolumeControls("musicShowVolumeControls", "Show Volume Controls", true),
     MusicShowProgressBar("musicShowProgressBar", "Show Progress Bar", true),
-    MusicShowAlbumArt("musicShowAlbumArt", "Show Album Art", false),
+    MusicShowAlbumArt("musicShowAlbumArt", "Show Album Art", false, minFirmware = WatchPrefMinFirmware(4, 34)),
     ;
 
     override val type = WatchPrefType.TypeBoolean
@@ -503,6 +536,7 @@ enum class EnumWatchPref(
     val options: List<WatchPrefEnum>,
     override val isDebugSetting: Boolean = false,
     override val description: String? = null,
+    override val minFirmware: WatchPrefMinFirmware? = null,
 ) : WatchPref<WatchPrefEnum> {
     SystemTextSize(
         "systemTextSize",
@@ -510,6 +544,7 @@ enum class EnumWatchPref(
         ContentSize.Default,
         ContentSize.entries,
         description = "Text size for system menus and the launcher",
+        minFirmware = WatchPrefMinFirmware(4, 39),
     ),
     NotificationTextSize(
         "notifTextSize",
@@ -517,6 +552,7 @@ enum class EnumWatchPref(
         NotificationContentSize.Default,
         NotificationContentSize.entries,
         description = "Text size for notifications",
+        minFirmware = WatchPrefMinFirmware(4, 39),
     ),
     NotificationFilter(
         "mask",
@@ -600,6 +636,7 @@ enum class EnumWatchPref(
         description = "Bundles the ambient sensor, dynamic backlight, brightness and timeout into one mode. Choose Advanced to configure them individually.",
         defaultValue = BacklightPresetMode.Standard,
         options = BacklightPresetMode.entries,
+        minFirmware = WatchPrefMinFirmware(4, 22),
     ),
     BacklightIntensity(
         id = "lightIntensity",
@@ -614,6 +651,7 @@ enum class EnumWatchPref(
         description = "Automatically adjust backlight brightness to match your environment (using light sensor). Dimmer modes stay dimmer in bright light.",
         defaultValue = BacklightDynamicMode.Standard,
         options = BacklightDynamicMode.entries,
+        minFirmware = WatchPrefMinFirmware(4, 22),
     ),
     BacklightTouch(
         id = "lightTouch",
@@ -628,6 +666,7 @@ enum class EnumWatchPref(
         description = "Automatic follows the Imperial Units setting.",
         defaultValue = WindUnits.FromDistance,
         options = WindUnits.entries,
+        minFirmware = WatchPrefMinFirmware(4, 37),
     ),
     Language(
         id = "language",
@@ -635,6 +674,7 @@ enum class EnumWatchPref(
         description = "Choose Custom to use the installed language pack.",
         defaultValue = WatchLanguage.Custom,
         options = WatchLanguage.entries,
+        minFirmware = WatchPrefMinFirmware(4, 28),
     ),
     ;
 
