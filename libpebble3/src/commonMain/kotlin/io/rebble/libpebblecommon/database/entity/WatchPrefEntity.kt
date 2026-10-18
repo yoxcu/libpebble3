@@ -7,6 +7,7 @@ import coredev.GenerateRoomEntity
 import io.rebble.libpebblecommon.SystemAppIDs.HEALTH_APP_UUID
 import io.rebble.libpebblecommon.SystemAppIDs.QUIET_TIME_TOGGLE_UUID
 import io.rebble.libpebblecommon.SystemAppIDs.TIMELINE_FUTURE_UUID
+import io.rebble.libpebblecommon.SystemAppIDs.TOUCH_TOGGLE_UUID
 import io.rebble.libpebblecommon.database.MillisecondInstant
 import io.rebble.libpebblecommon.database.asMillisecond
 import io.rebble.libpebblecommon.database.dao.BlobDbItem
@@ -122,6 +123,13 @@ data class WatchPrefItem(
 
                 WatchPrefType.TypeQuickLaunch -> {
                     val setting = QuickLaunchSetting.fromJson(value)
+                    // Fork (stoandl): a watch without the action reads its UUID as an uninstalled app, and
+                    // before PebbleOS 4.40 a tap on such a button reboots the watch.
+                    val support = QuickLaunchActionSupport.of(setting.uuid)
+                    if (setting.enabled && support != null && !support.isMetBy(params.platform, params.firmwareVersion)) {
+                        logger.d { "Not sending watch pref $id: ${params.platform.codename} on ${params.firmwareVersion.stringVersion} lacks the action ${setting.uuid}" }
+                        return null
+                    }
                     val struct = QLMappable(
                         enabled = setting.enabled,
                         uuid = setting.uuid,
@@ -178,6 +186,25 @@ data class QuickLaunchSetting(
     companion object {
         fun fromJson(str: String): QuickLaunchSetting = json.decodeFromString(str)
         fun QuickLaunchSetting.toJson() = json.encodeToString(this)
+    }
+}
+
+/**
+ * Fork (stoandl): a firmware Quick Launch action that only some watches have. The firmware registers it
+ * only on [watchTypes] boards from [minFirmware] on; a host must not send it to any other watch.
+ */
+data class QuickLaunchActionSupport(val minFirmware: WatchPrefMinFirmware, val watchTypes: Set<WatchType>) {
+    fun isMetBy(watchType: WatchType, firmware: FirmwareVersion): Boolean =
+        watchType in watchTypes && minFirmware.isMetBy(firmware)
+
+    companion object {
+        private val byUuid = mapOf(
+            // Toggle Touch (fw 4.39.0, `TOUCH_TOGGLE` under CONFIG_TOUCH): obelix (emery) and getafix (gabbro).
+            TOUCH_TOGGLE_UUID to QuickLaunchActionSupport(WatchPrefMinFirmware(4, 39), setOf(WatchType.EMERY, WatchType.GABBRO)),
+        )
+
+        /** What the action [uuid] needs, or null when every watch has it (or it is an app). */
+        fun of(uuid: Uuid?): QuickLaunchActionSupport? = uuid?.let { byUuid[it] }
     }
 }
 
