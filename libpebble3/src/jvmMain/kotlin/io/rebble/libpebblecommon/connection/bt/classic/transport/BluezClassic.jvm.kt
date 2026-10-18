@@ -6,6 +6,7 @@ import io.rebble.libpebblecommon.connection.PebbleScanResult
 import io.rebble.libpebblecommon.connection.bt.BLUEZ_ADAPTER1
 import io.rebble.libpebblecommon.connection.bt.BLUEZ_DEVICE1
 import io.rebble.libpebblecommon.connection.bt.ORG_BLUEZ
+import io.rebble.libpebblecommon.connection.bt.discoveryStartFailure
 import io.rebble.libpebblecommon.connection.bt.unwrapVariant
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
@@ -82,7 +83,7 @@ class BluezClassicScanner : ClassicScanner {
         val adapterPath = findClassicAdapterPath(conn)
         if (adapterPath == null) {
             clog.w { "no adapter found; cannot BR/EDR scan" }
-            close(); return@callbackFlow
+            throw IllegalStateException("no Bluetooth adapter")
         }
         val adapter = conn.getRemoteObject(ORG_BLUEZ, adapterPath, ClassicAdapter1::class.java)
         val objMgr = conn.getRemoteObject(ORG_BLUEZ, "/", ObjectManager::class.java)
@@ -97,6 +98,7 @@ class BluezClassicScanner : ClassicScanner {
             clog.d { "BR/EDR discovery started on $adapterPath" }
         } catch (e: Exception) {
             clog.w { "StartDiscovery (bredr) failed: ${e.message}" }
+            discoveryStartFailure(e)?.let { throw it }
         }
 
         val poller = launch(Dispatchers.IO) {

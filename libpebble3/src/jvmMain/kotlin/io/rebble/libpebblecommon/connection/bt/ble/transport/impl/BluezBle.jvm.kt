@@ -9,6 +9,7 @@ import io.rebble.libpebblecommon.connection.bt.BLUEZ_ADAPTER1
 import io.rebble.libpebblecommon.connection.bt.BLUEZ_DEVICE1
 import io.rebble.libpebblecommon.connection.bt.ORG_BLUEZ
 import io.rebble.libpebblecommon.connection.bt.bluezObjectPath
+import io.rebble.libpebblecommon.connection.bt.discoveryStartFailure
 import io.rebble.libpebblecommon.connection.bt.unwrapVariant
 import io.rebble.libpebblecommon.connection.bt.ble.transport.BleScanner
 import io.rebble.libpebblecommon.connection.bt.ble.transport.ConnectedGattClient
@@ -131,8 +132,7 @@ class BluezBleScanner : BleScanner {
         val adapterPath = findAdapterPath(conn)
         if (adapterPath == null) {
             log.w { "BluezBleScanner: no adapter found; cannot scan" }
-            close()
-            return@callbackFlow
+            throw IllegalStateException("no Bluetooth adapter")
         }
         val adapter = conn.getRemoteObject(ORG_BLUEZ, adapterPath, BluezAdapter1::class.java)
         val objMgr = conn.getRemoteObject(ORG_BLUEZ, "/", ObjectManager::class.java)
@@ -174,6 +174,7 @@ class BluezBleScanner : BleScanner {
             log.d { "BluezBleScanner: discovery started on $adapterPath" }
         } catch (e: Exception) {
             log.w { "BluezBleScanner: StartDiscovery failed: ${e.message}" }
+            discoveryStartFailure(e)?.let { throw it }
         }
 
         val poller = launch(Dispatchers.IO) {

@@ -1,5 +1,6 @@
 package io.rebble.libpebblecommon.connection
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -20,5 +21,15 @@ class ScanningTest {
         assertFalse(isDualModeClassicBridgeName("Pebble Sleeve"))     // "le" inside a word, not \bLE\b
         assertFalse(isDualModeClassicBridgeName("My LE Speaker"))     // doesn't start with "Pebble"
         assertFalse(isDualModeClassicBridgeName(""))
+    }
+
+    @Test
+    fun scanFailureCarriesItsCause() {
+        assertEquals(
+            "Failed to scan for watches: Bluetooth discovery didn't start (Resource Not Ready)",
+            scanFailedMessage("Failed to scan for watches", IllegalStateException("Bluetooth discovery didn't start (Resource Not Ready)")),
+        )
+        assertEquals("Failed to scan for watches", scanFailedMessage("Failed to scan for watches", IllegalStateException()))
+        assertEquals("Failed to scan for watches", scanFailedMessage("Failed to scan for watches", IllegalStateException(" ")))
     }
 }

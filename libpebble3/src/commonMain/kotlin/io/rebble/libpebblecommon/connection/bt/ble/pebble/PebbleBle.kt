@@ -24,6 +24,7 @@ import io.rebble.libpebblecommon.connection.bt.ble.transport.GattServerManager
 import io.rebble.libpebblecommon.di.ConnectionCoroutineScope
 import io.rebble.libpebblecommon.metadata.WatchHardwarePlatform
 import io.rebble.libpebblecommon.metadata.WatchType
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -266,10 +267,18 @@ class PreConnectScanner(
         }
         logger.d { "scanBeforeConnect(): $identifier" }
         val scanResults = bleScanner.scan()
-        val found = withTimeoutOrNull(SCAN_TIMEOUT_MS) {
-            scanResults.first {
-                it.identifier == identifier
+        // Fork (stoandl): the JVM scanner fails when discovery can't start; the connect goes ahead without it.
+        val found = try {
+            withTimeoutOrNull(SCAN_TIMEOUT_MS) {
+                scanResults.first {
+                    it.identifier == identifier
+                }
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.w { "scanBeforeConnect: scan failed: ${e.message}" }
+            null
         }
         logger.d { "scanBeforeConnect: found = $found" }
     }

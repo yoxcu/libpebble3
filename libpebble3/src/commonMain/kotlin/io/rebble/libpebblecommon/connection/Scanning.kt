@@ -46,6 +46,10 @@ internal fun isDualModeClassicBridgeName(name: String): Boolean =
     name.startsWith("Pebble", ignoreCase = true) &&
         Regex("""\bLE\b""", RegexOption.IGNORE_CASE).containsMatchIn(name)
 
+/** Fork (stoandl): the scan error's cause in the user-facing message, so a host can show why. */
+internal fun scanFailedMessage(base: String, e: Throwable): String =
+    e.message?.takeIf { it.isNotBlank() }?.let { "$base: $it" } ?: base
+
 class RealScanning(
     private val watchConnector: WatchConnector,
     private val bleScanner: BleScanner,
@@ -109,7 +113,7 @@ class RealScanning(
                 throw e
             } catch (e: Exception) {
                 Logger.d { "Ble scan failed: $e" }
-                errorTracker.reportError(UserFacingError.FailedToScan("Failed to scan for watches"))
+                errorTracker.reportError(UserFacingError.FailedToScan(scanFailedMessage("Failed to scan for watches", e)))
                 stopBleScan()
             }
         }
@@ -139,7 +143,7 @@ class RealScanning(
                 throw e
             } catch (e: Exception) {
                 Logger.e(e) { "Classic scan failed" }
-                errorTracker.reportError(UserFacingError.FailedToScan("Failed to scan for classic watches"))
+                errorTracker.reportError(UserFacingError.FailedToScan(scanFailedMessage("Failed to scan for classic watches", e)))
                 stopClassicScan()
             }
         }
