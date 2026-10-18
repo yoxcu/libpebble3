@@ -1143,6 +1143,7 @@ fun rememberSettingsItemsState(navBarNav: NavBarNav?, snackbarDisplay: SnackbarD
                     },
                     itemText = {
                         when (it) {
+                            HRMonitoringInterval.FiveMin -> "Every 5 minutes"
                             HRMonitoringInterval.TenMin -> "Every 10 minutes"
                             HRMonitoringInterval.ThirtyMin -> "Every 30 minutes"
                             HRMonitoringInterval.OneHour -> "Every hour"

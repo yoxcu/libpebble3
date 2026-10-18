@@ -8,7 +8,6 @@ import io.rebble.libpebblecommon.database.entity.ActivityPrefsBlobItem
 import io.rebble.libpebblecommon.database.entity.ActivityPrefsValue
 import io.rebble.libpebblecommon.database.entity.ActivityPrefsValue.Companion.encodeToString
 import io.rebble.libpebblecommon.database.entity.DistanceUnitsBlobItem
-import io.rebble.libpebblecommon.database.entity.HRMonitoringInterval
 import io.rebble.libpebblecommon.database.entity.HealthGender
 import io.rebble.libpebblecommon.database.entity.HealthSettingsEntry
 import io.rebble.libpebblecommon.database.entity.HealthSettingsEntryDao
@@ -16,7 +15,6 @@ import io.rebble.libpebblecommon.database.entity.HealthSettingsEntrySyncEntity
 import io.rebble.libpebblecommon.database.entity.HeartRatePreferencesBlobItem
 import io.rebble.libpebblecommon.database.entity.HeartRatePreferencesValue
 import io.rebble.libpebblecommon.database.entity.HeartRatePreferencesValue.Companion.encodeToString
-import io.rebble.libpebblecommon.database.entity.HrmPreferencesBlobItem
 import io.rebble.libpebblecommon.database.entity.HrmPreferencesValue
 import io.rebble.libpebblecommon.database.entity.HrmPreferencesValue.Companion.encodeToString
 import io.rebble.libpebblecommon.database.entity.UnitsDistanceValue
@@ -62,25 +60,12 @@ interface HealthSettingsEntryRealDao : HealthSettingsEntryDao {
                     ).encodeToString()
                 }
                 "hrmPreferences" -> {
-                    // SOptional auto-detects presence from remaining buffer length; absent
-                    // fields fall back to HrmPreferencesValue defaults below.
-                    val blob = HrmPreferencesBlobItem(
-                        enabled = false,
-                        measurementInterval = 0,
-                        hasMeasurementInterval = true,
-                        activityTrackingEnabled = false,
-                        hasActivityTrackingEnabled = true,
-                    )
-                    blob.fromBytes(value)
-                    val defaults = HrmPreferencesValue()
-                    HrmPreferencesValue(
-                        enabled = blob.enabled.get() != 0.toByte(),
-                        measurementInterval = blob.measurementInterval.get()
-                            ?.let { HRMonitoringInterval.fromInt(it) }
-                            ?: defaults.measurementInterval,
-                        activityTrackingEnabled = blob.activityTrackingEnabled.get()
-                            ?: defaults.activityTrackingEnabled,
-                    ).encodeToString()
+                    val previous = HrmPreferencesValue.fromString(getEntry(key)?.value)
+                    HrmPreferencesValue.fromWatchBytes(write.value, previous).also {
+                        it.unknownMeasurementInterval?.let { code ->
+                            logger.w { "Watch sent HRM interval code $code (newer firmware?); keeping it as is" }
+                        }
+                    }.encodeToString()
                 }
                 "heartRatePreferences" -> {
                     val blob = HeartRatePreferencesBlobItem(

@@ -26,6 +26,7 @@ import io.rebble.libpebblecommon.structmapper.SUByte
 import io.rebble.libpebblecommon.structmapper.SUShort
 import io.rebble.libpebblecommon.structmapper.StructMappable
 import io.rebble.libpebblecommon.structmapper.StructMapper
+import io.rebble.libpebblecommon.util.DataBuffer
 import io.rebble.libpebblecommon.util.Endian
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -185,10 +186,9 @@ suspend fun HealthSettingsEntryDao.setWatchSettings(healthSettings: HealthSettin
     insertOrReplace(
         HealthSettingsEntry(
             id = KEY_HRM_PREFERENCES,
-            value = HrmPreferencesValue(
-                enabled = healthSettings.hrmEnabled,
-                measurementInterval = healthSettings.hrmMeasurementInterval,
-                activityTrackingEnabled = healthSettings.hrmActivityTrackingEnabled,
+            value = HrmPreferencesValue.from(
+                healthSettings,
+                previous = HrmPreferencesValue.fromString(getEntry(KEY_HRM_PREFERENCES)?.value),
             ).encodeToString(),
             timestamp = now,
         )
@@ -252,10 +252,60 @@ data class HrmPreferencesValue(
     val enabled: Boolean = true,
     val measurementInterval: HRMonitoringInterval = HRMonitoringInterval.TenMin,
     val activityTrackingEnabled: Boolean = false,
+    /**
+     * The watch's interval code when [HRMonitoringInterval] has no name for it (an option a newer
+     * firmware added). It wins on the wire, so writing the other fields hands the watch its own
+     * choice back instead of the last interval we could name, which [measurementInterval] keeps.
+     */
+    val unknownMeasurementInterval: Byte? = null,
 ) {
     companion object {
         fun HrmPreferencesValue.encodeToString(): String = json.encodeToString(this)
         fun fromString(value: String?): HrmPreferencesValue? = value?.let { json.decodeFromString(value) }
+
+        /**
+         * Decodes the watch's ActivityHRMSettings blob. Fields the watch's firmware is too old to
+         * send take the defaults. An interval code we can't name is kept verbatim in
+         * [unknownMeasurementInterval]; [measurementInterval] then stays at [previous]'s.
+         */
+        fun fromWatchBytes(bytes: UByteArray, previous: HrmPreferencesValue?): HrmPreferencesValue {
+            // SOptional auto-detects presence from the remaining buffer length.
+            val blob = HrmPreferencesBlobItem(
+                enabled = false,
+                measurementInterval = 0,
+                hasMeasurementInterval = true,
+                activityTrackingEnabled = false,
+                hasActivityTrackingEnabled = true,
+            )
+            blob.fromBytes(DataBuffer(bytes))
+            val defaults = HrmPreferencesValue()
+            val code = blob.measurementInterval.get()
+            val named = code?.let { HRMonitoringInterval.fromInt(it) }
+            val unknown = code?.takeIf { named == null }
+            return HrmPreferencesValue(
+                enabled = blob.enabled.get() != 0.toByte(),
+                measurementInterval = named
+                    ?: previous?.measurementInterval?.takeIf { unknown != null }
+                    ?: defaults.measurementInterval,
+                activityTrackingEnabled = blob.activityTrackingEnabled.get()
+                    ?: defaults.activityTrackingEnabled,
+                unknownMeasurementInterval = unknown,
+            )
+        }
+
+        /**
+         * The value to store for [settings]. An interval code from the watch that we can't name
+         * survives as long as the interval in [settings] is the one [previous] showed for it, that
+         * is until someone picks a different interval.
+         */
+        fun from(settings: HealthSettings, previous: HrmPreferencesValue?): HrmPreferencesValue =
+            HrmPreferencesValue(
+                enabled = settings.hrmEnabled,
+                measurementInterval = settings.hrmMeasurementInterval,
+                activityTrackingEnabled = settings.hrmActivityTrackingEnabled,
+                unknownMeasurementInterval = previous?.unknownMeasurementInterval
+                    ?.takeIf { settings.hrmMeasurementInterval == previous.measurementInterval },
+            )
 
         // ActivityHRMSettings grew over time and the watch rejects writes whose length doesn't
         // match the compiled-in struct size. Cutoffs:
@@ -265,7 +315,7 @@ data class HrmPreferencesValue(
         fun HrmPreferencesValue.asBytes(firmwareVersion: FirmwareVersion): UByteArray =
             HrmPreferencesBlobItem(
                 enabled = enabled,
-                measurementInterval = measurementInterval.value,
+                measurementInterval = unknownMeasurementInterval ?: measurementInterval.value,
                 hasMeasurementInterval = firmwareVersion >= FW_HRM_MEASUREMENT_INTERVAL,
                 activityTrackingEnabled = activityTrackingEnabled,
                 hasActivityTrackingEnabled = firmwareVersion >= FW_HRM_ACTIVITY_TRACKING,
@@ -361,14 +411,20 @@ enum class HealthGender(
     }
 }
 
+/** The firmware's `HRMonitoringInterval` (`include/pbl/services/activity/activity.h`). */
 enum class HRMonitoringInterval(val value: Byte) {
     TenMin(0),
     ThirtyMin(1),
     OneHour(2),
     Disabled(3),
+    /** Firmware 4.39.0 and later (PebbleOS 2edd1c78c). Older firmware treats the code as invalid
+     *  and shows and measures 10 minutes. */
+    FiveMin(4),
     ;
 
     companion object {
-        fun fromInt(value: Byte) = entries.first { it.value == value }
+        /** The interval for a firmware code, or null for one a newer firmware added. Never throws:
+         *  the code comes from the watch. */
+        fun fromInt(value: Byte): HRMonitoringInterval? = entries.firstOrNull { it.value == value }
     }
 }
