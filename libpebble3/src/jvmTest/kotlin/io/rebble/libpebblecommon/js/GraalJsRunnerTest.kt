@@ -44,6 +44,7 @@ import kotlinx.io.files.Path
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import org.graalvm.polyglot.Value
 import java.io.ByteArrayOutputStream
 import java.lang.reflect.Proxy
 import java.net.InetAddress
@@ -58,9 +59,11 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.measureTime
 import kotlin.uuid.Uuid
 
 /**
@@ -329,6 +332,36 @@ class GraalJsRunnerTest {
         runners -= runner
         runner.stop()
         withTimeout(TIMEOUT) { while (jsThreadAlive()) delay(20) }
+    }
+
+    @Test
+    fun sessionsShareTheEngine() = runBlocking<Unit> {
+        // A plugin session holds the plugin engine; PKJS must still get one of its own (Truffle
+        // refuses a second host-access policy on an engine).
+        val plugin = JsEngine(AppContext(), scope, "beside-pkjs", emptyList())
+        plugin.start()
+        try {
+            val first = runner("globalThis.session = 1; globalThis.onlyFirst = true;")
+            val second = runner("globalThis.session = 2;")
+            val startMs = listOf(first, second).map { measureTime { it.start() }.inWholeMilliseconds }
+            fun JsRunner.engine() = (runBlocking { evalWithResult("({})") } as Value).context.engine
+            assertSame(first.engine(), second.engine())
+            // One engine, separate contexts: no global leaks from one app's JS into the other's.
+            assertEquals(2L, second.evalWithResult("globalThis.session"))
+            assertEquals("undefined", second.evalWithResult("typeof globalThis.onlyFirst"))
+
+            // Closing a context leaves the engine to the others, and to the next session.
+            runners -= first
+            first.stop()
+            assertEquals(2L, second.evalWithResult("globalThis.session"))
+            val third = runner("globalThis.session = 3;")
+            val thirdMs = measureTime { third.start() }.inWholeMilliseconds
+            assertEquals(3L, third.evalWithResult("globalThis.session"))
+            assertSame(second.engine(), third.engine())
+            println("PKJS session start on the shared engine: ${startMs + thirdMs} ms")
+        } finally {
+            plugin.stop()
+        }
     }
 
     private companion object {

@@ -18,7 +18,6 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.doubleOrNull
 import org.graalvm.polyglot.Context
-import org.graalvm.polyglot.Engine
 import org.graalvm.polyglot.HostAccess
 import org.graalvm.polyglot.PolyglotException
 import java.security.SecureRandom
@@ -30,8 +29,9 @@ import kotlin.time.Duration.Companion.seconds
  * method, [JsEngineDispatcher.dispatch], behind a JS proxy per [JsEngineInterface]. Arguments and
  * results cross as JSON, as on Android, so every number arrives as a `Double`.
  *
- * Plugin sessions are cold-started per request, so contexts share one [Engine] (its code caches
- * make a warm start a few milliseconds); each engine instance has its own context and JS thread.
+ * Plugin sessions are cold-started per request, so contexts share one engine ([GraalEngines]: its
+ * code caches make a warm start a few milliseconds); each engine instance has its own context and
+ * JS thread.
  * Nothing else is exposed: no host class lookup, no `Java`/`Packages`, no shell builtins (`print`,
  * `load`, `Graal`). Like JavaScriptCore, there are no timers: `typeof setTimeout` is `undefined`.
  * `crypto.getRandomValues` is provided (WebView has it, and plugins otherwise fall back to
@@ -60,9 +60,7 @@ actual class JsEngine actual constructor(
     }
 
     private fun startOnJsThread() {
-        val ctx = Context.newBuilder("js")
-            .engine(GraalEngines.shared)
-            .allowHostAccess(DISPATCH_ONLY)
+        val ctx = GraalEngines.contextBuilder(DISPATCH_ONLY)
             .allowHostClassLookup { false }
             .option("js.print", "false")
             .option("js.load", "false")
@@ -189,14 +187,6 @@ actual class JsEngine actual constructor(
               });
             })(globalThis);
         """.trimIndent()
-    }
-}
-
-/** One `Engine` per process: contexts on it share parsed code, so a session starts in milliseconds. */
-private object GraalEngines {
-    val shared: Engine by lazy {
-        // Stock OpenJDK runs Truffle interpreter-only; the warning is noise for every plugin session.
-        Engine.newBuilder("js").option("engine.WarnInterpreterOnly", "false").build()
     }
 }
 

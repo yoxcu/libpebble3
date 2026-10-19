@@ -35,6 +35,7 @@ import kotlin.time.Duration.Companion.seconds
 import org.graalvm.polyglot.Context as GraalContext
 import org.graalvm.polyglot.HostAccess
 import org.graalvm.polyglot.PolyglotException
+import org.graalvm.polyglot.Source
 import java.lang.reflect.Modifier
 
 class GraalJsRunner(
@@ -78,8 +79,7 @@ class GraalJsRunner(
 
     override suspend fun start() {
         withContext(jsThread) {
-            val ctx = GraalContext.newBuilder("js")
-                .allowHostAccess(PKJS_HOST_ACCESS)
+            val ctx = GraalEngines.contextBuilder(PKJS_HOST_ACCESS)
                 .allowHostClassLookup { _ -> false }
                 .build()
             jsContext = ctx
@@ -103,20 +103,9 @@ class GraalJsRunner(
             bindings.putMember("_PebbleGeo", GraalGeolocationInterface(jsScope, this@GraalJsRunner))
             bindings.putMember("localStorage", localStorage)
 
-            ctx.eval("js", BOOTSTRAP_JS)
-            // atob/btoa: browser APIs GraalJS lacks, as on iOS (plugin sources hand bitmaps over as base64).
-            ctx.eval("js", BASE64_JS)
-            evalResource(ctx, "/pkjs/JSTimeout.js")
-            evalResource(ctx, "/pkjs/XMLHTTPRequest.js")
-            evalResource(ctx, "/pkjs/startup.js")
+            SHIMS.forEach(ctx::eval)
         }
         loadAppJs(jsPath.toString())
-    }
-
-    private fun evalResource(ctx: GraalContext, resourcePath: String) {
-        val content = GraalJsRunner::class.java.getResourceAsStream(resourcePath)?.bufferedReader()?.readText()
-            ?: error("JS resource not found: $resourcePath")
-        ctx.eval("js", content)
     }
 
     override suspend fun loadAppJs(jsUrl: String) {
@@ -264,6 +253,30 @@ class GraalJsRunner(
 
     private companion object {
         val STOP_TIMEOUT = 5.seconds
+
+        /**
+         * The shims every session runs before the app's JS, in order. Built once: the engine caches
+         * a parse per [Source], so only the first session on it parses them.
+         */
+        val SHIMS: List<Source> by lazy {
+            listOf(
+                jsSource("bootstrap.js", BOOTSTRAP_JS),
+                // atob/btoa: browser APIs GraalJS lacks, as on iOS (plugin sources hand bitmaps over as base64).
+                jsSource("base64.js", BASE64_JS),
+                resourceSource("JSTimeout.js"),
+                resourceSource("XMLHTTPRequest.js"),
+                resourceSource("startup.js"),
+            )
+        }
+
+        fun jsSource(name: String, js: String): Source = Source.newBuilder("js", js, name).buildLiteral()
+
+        fun resourceSource(name: String): Source {
+            val content = GraalJsRunner::class.java.getResourceAsStream("/pkjs/$name")
+                ?.bufferedReader()?.use { it.readText() }
+                ?: error("JS resource not found: /pkjs/$name")
+            return jsSource(name, content)
+        }
     }
 }
 
