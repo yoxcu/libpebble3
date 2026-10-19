@@ -161,24 +161,30 @@ actual fun getBluetoothDevicePairEvents(
     }
 }
 
-actual fun isBondedClassic(identifier: PebbleBtClassicIdentifier): Boolean {
+actual fun isBondedClassic(identifier: PebbleBtClassicIdentifier): Boolean = classicBondState(identifier) == true
+
+/**
+ * Fork (stoandl): BlueZ's Bonded for a Classic watch, or null when BlueZ can't tell — no device object
+ * (adapter off, or never discovered) or the property can't be read — so a caller doesn't take "unknown"
+ * for "not bonded" and start a pairing that can only fail.
+ */
+fun classicBondState(identifier: PebbleBtClassicIdentifier): Boolean? {
     return try {
         val conn = DBusConnectionBuilder.forSystemBus().withShared(false).build()
         try {
-            val path = findClassicDevicePath(conn, identifier.macAddress) ?: return false
+            val path = findClassicDevicePath(conn, identifier.macAddress) ?: return null
             val props = conn.getRemoteObject("org.bluez", path, Properties::class.java)
-            val bonded = props.Get<Any>("org.bluez.Device1", "Bonded")
-            when (bonded) {
+            when (val bonded = props.Get<Any>("org.bluez.Device1", "Bonded")) {
                 is Boolean -> bonded
-                is Variant<*> -> bonded.value as? Boolean ?: false
-                else -> false
+                is Variant<*> -> bonded.value as? Boolean
+                else -> null
             }
         } finally {
             conn.disconnect()
         }
     } catch (e: Exception) {
-        log.d { "isBondedClassic(${identifier.macAddress}) failed: ${e.message}" }
-        false
+        log.d { "classicBondState(${identifier.macAddress}) failed: ${e.message}" }
+        null
     }
 }
 
