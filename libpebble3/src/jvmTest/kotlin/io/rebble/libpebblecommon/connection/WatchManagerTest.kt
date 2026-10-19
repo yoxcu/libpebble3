@@ -36,19 +36,24 @@ import io.rebble.libpebblecommon.web.LockerModel
 import io.rebble.libpebblecommon.web.LockerModelWrapper
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import kotlin.time.Clock
 import kotlin.time.Instant
 import kotlinx.io.files.Path
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.time.Duration.Companion.milliseconds
@@ -107,6 +112,8 @@ class WatchManagerTest {
     private var connectSuccess = false
     private var exceededMax = false
     private var lastPreviouslyConnected: Boolean? = null
+    // Fork (stoandl): a per-watch connector for the two-watch tests; null = TestPebbleConnector.
+    private var connectorFor: ((PebbleIdentifier) -> PebbleConnector)? = null
 
     inner class TestPebbleConnector : PebbleConnector {
         private val _disconnected = CompletableDeferred<ConnectionFailureReason>()
@@ -258,7 +265,7 @@ class WatchManagerTest {
             override fun createScope(props: ConnectionScopeProperties): ConnectionScope {
                 return TestConnectionScope(
                     identifier = props.identifier,
-                    pebbleConnector = TestPebbleConnector(),
+                    pebbleConnector = connectorFor?.invoke(props.identifier) ?: TestPebbleConnector(),
                     firmwareUpdateManager = firmwareUpdateManager,
                     firmwareUpdater = firmwareUpdater,
                     batteryWatcher = batteryWatcher,
@@ -401,5 +408,75 @@ class WatchManagerTest {
         watchManager.init()
         watchManager.watches.first { totalConnections >= 1 && it.any { it is ConnectingPebbleDevice } }
         assertEquals(true, lastPreviouslyConnected)
+    }
+
+    /**
+     * A connector whose connect() never finishes: an away BLE watch whose standing Device1.Connect() keeps
+     * arming. [endsOnDisconnect] is the TransportConnector contract (BluezGattConnector after the fork fix):
+     * disconnect() completes `disconnected` even though no link ever came up. Without it the attempt only
+     * ends with the connection scope, which WatchManager closes only after `disconnected` completes.
+     */
+    inner class ArmingConnector(
+        private val id: PebbleIdentifier,
+        private val endsOnDisconnect: Boolean,
+        private val connectCalled: CompletableDeferred<Unit>,
+        private val stop: CompletableDeferred<Unit>,
+    ) : PebbleConnector {
+        private val _disconnected = CompletableDeferred<ConnectionFailureReason>()
+        private val _state = MutableStateFlow<ConnectingPebbleState>(ConnectingPebbleState.Inactive(id))
+
+        override suspend fun connect(knownWatchProperties: KnownWatchProperties?, lastError: ConnectionFailureReason?) {
+            _state.value = ConnectingPebbleState.Connecting(id)
+            connectCalled.complete(Unit)
+            // Arming until the attempt is ended (or the test is over).
+            select<Unit> {
+                _disconnected.onAwait { }
+                stop.onAwait { }
+            }
+        }
+
+        override fun disconnect() {
+            if (endsOnDisconnect) _disconnected.complete(ConnectionFailureReason.NotAnError_DisconnectRequested)
+        }
+
+        override val disconnected: WasDisconnected = WasDisconnected(_disconnected)
+        override val state: StateFlow<ConnectingPebbleState> = _state.asStateFlow()
+    }
+
+    /** Watch A holds the goal and arms forever (out of range); then the goal moves to B. Returns whether B's
+     *  connect() was called within a few seconds (the single-watch slot must have been freed by A). */
+    private suspend fun goalMovesOffAnArmingWatch(scope: CoroutineScope, endsOnDisconnect: Boolean): Boolean {
+        val a = identifier
+        val b = "addr2".asPebbleBleIdentifier()
+        val aConnecting = CompletableDeferred<Unit>()
+        val bConnecting = CompletableDeferred<Unit>()
+        val stop = CompletableDeferred<Unit>()
+        connectorFor = { id ->
+            if (id == a) ArmingConnector(id, endsOnDisconnect, aConnecting, stop)
+            else ArmingConnector(id, endsOnDisconnect = true, bConnecting, stop)
+        }
+        seededKnownWatches = listOf(seededWatch(lastConnected = MillisecondInstant(Instant.fromEpochMilliseconds(1_000))))
+        val watchManager = create(scope)
+        watchManager.init()
+        // The connectors run on their own (real) dispatcher: wait in real time.
+        withContext(Dispatchers.Default) { withTimeoutOrNull(3.seconds) { aConnecting.await() } }
+            ?: error("A never started connecting")
+        watchManager.addScanResult(PebbleScanResult(b, "other", 0, null))
+        watchManager.requestConnection(b)
+        val bConnected = withContext(Dispatchers.Default) { withTimeoutOrNull(3.seconds) { bConnecting.await() } }
+        stop.complete(Unit)
+        return bConnected != null
+    }
+
+    @Test
+    fun goalMovedOffAnArmingWatchConnectsTheOther() = runTest(timeout = 10.seconds) {
+        assertTrue(goalMovesOffAnArmingWatch(backgroundScope, endsOnDisconnect = true))
+    }
+
+    /** Documents why the contract matters: a connector that ignores disconnect() while arming (the BlueZ
+     *  connector before the fork fix) keeps the slot, and the other watch never gets a connect(). */
+    @Test
+    fun anArmingWatchThatIgnoresDisconnectKeepsTheSlot() = runTest(timeout = 10.seconds) {
+        assertFalse(goalMovesOffAnArmingWatch(backgroundScope, endsOnDisconnect = false))
     }
 }

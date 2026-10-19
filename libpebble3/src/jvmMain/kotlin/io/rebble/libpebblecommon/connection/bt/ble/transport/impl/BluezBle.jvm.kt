@@ -252,7 +252,12 @@ class BluezGattConnector(
     // before the Connected=false edge so the "link dropped" log can name why. Best-effort: empty on
     // BlueZ < 5.83 (no such signal) or if the property edge happens to be delivered first.
     @Volatile private var lastDropReason: String? = null
-    private var attempted = false
+    @Volatile private var attempted = false
+    // Once the link has come up, a later Connected=false is a real disconnect we must surface.
+    // While still arming, Connected=false is just a failed background attempt and is ignored —
+    // BlueZ keeps the accept-list intent and ServicesResolved fires when the watch returns. A
+    // field, so disconnect() can tell an arming attempt (which it must end itself) from a link.
+    private val linkUp = AtomicBoolean(false)
 
     override suspend fun connect(): GattConnectionResult {
         val path = devicePath ?: run {
@@ -268,10 +273,6 @@ class BluezGattConnector(
         val props = c.getRemoteObject(ORG_BLUEZ, path, Properties::class.java)
 
         val resolved = CompletableDeferred<Boolean>()
-        // Once the link has come up, a later Connected=false is a real disconnect we must surface.
-        // While still arming, Connected=false is just a failed background attempt and is ignored —
-        // BlueZ keeps the accept-list intent and ServicesResolved fires when the watch returns.
-        val linkUp = AtomicBoolean(false)
         val rule = DBusMatchRuleBuilder.create()
             .withType("signal").withInterface(DBUS_PROPERTIES)
             .withMember("PropertiesChanged").withPath(path).build()
@@ -345,14 +346,15 @@ class BluezGattConnector(
         // back still Paired when the adapter does); a watch that rejects the bond instead shows up as
         // Device1.Disconnected(reason=Authentication), which the host's broken-bond detector keys off.
         // Cancellation (BT off / requestDisconnection / forget) unwinds via the scope and is cleaned
-        // up in the finally.
+        // up in the finally; disconnect() while arming completes `disconnected`, which ends the loop
+        // (see disconnect()).
         var succeeded = false
         // Arming-phase reconcile bookkeeping (consumed by the block after attempt.cancel() below):
         // consecutive cycles seen stuck (Connected && !ServicesResolved) / unreadable (null state).
         var unresolvedCycles = 0
         var unreadableCycles = 0
         try {
-            while (scope.isActive) {
+            while (scope.isActive && !_disconnected.isCompleted) {
                 val attempt = scope.launch(Dispatchers.IO) {
                     try {
                         device.Connect()
@@ -381,9 +383,12 @@ class BluezGattConnector(
                     select<Unit> {
                         resolved.onAwait { }
                         attempt.onJoin { }
+                        _disconnected.onAwait { }
                     }
                 }
                 attempt.cancel()
+                // Ended: disconnect() while arming, or the device object vanished. Never re-arm.
+                if (_disconnected.isCompleted) break
 
                 // Reconcile against BlueZ's OWN state each arming cycle. The signal handler above is
                 // edge-triggered, so if the ServicesResolved false->true edge is missed (raced/never
@@ -439,7 +444,7 @@ class BluezGattConnector(
                     if (resolved.await()) {
                         logger.i { "connected and services resolved (${System.currentTimeMillis() - startedAtMs} ms after connect())" }
                         succeeded = true
-                        scope.launch(Dispatchers.IO) { reconcileConnectedState(props, linkUp) }
+                        scope.launch(Dispatchers.IO) { reconcileConnectedState(props) }
                         return GattConnectionResult.Success(BluezConnectedGattClient(identifier, c, path))
                     }
                     val reason = if (_disconnected.isCompleted) ConnectionFailureReason.FailedToConnect
@@ -461,11 +466,16 @@ class BluezGattConnector(
                 // not to the radio. A stuck half-link never completes `resolved`, so its re-arms keep
                 // the full settle.
                 logger.d { "connect attempt ended without a link; waiting up to $RETRY_BACKOFF for it to resolve before re-arming" }
-                withTimeoutOrNull(RETRY_BACKOFF) { resolved.await() }
+                withTimeoutOrNull(RETRY_BACKOFF) {
+                    select<Unit> {
+                        resolved.onAwait { }
+                        _disconnected.onAwait { }
+                    }
+                }
             }
-            // Scope cancelled (Bluetooth off / requestDisconnection / forget).
+            // Scope cancelled (Bluetooth off / forget), disconnect() while arming, or no device object.
             if (!_disconnected.isCompleted) _disconnected.complete(ConnectionFailureReason.FailedToConnect)
-            return GattConnectionResult.Failure(ConnectionFailureReason.FailedToConnect)
+            return GattConnectionResult.Failure(_disconnected.await())
         } finally {
             if (!succeeded) close()
         }
@@ -478,8 +488,15 @@ class BluezGattConnector(
         if (c != null && path != null) {
             try { c.getRemoteObject(ORG_BLUEZ, path, BluezDevice1::class.java).Disconnect() } catch (_: Exception) {}
         }
-        if (!attempted && !_disconnected.isCompleted) {
-            _disconnected.complete(ConnectionFailureReason.NotAnError_NeverAttmpedConnection)
+        // A link that is up ends through its Connected=false edge. One that never came up has no such
+        // edge (BlueZ only cancels the pending Connect()), so end it here: WatchManager frees its single
+        // connection slot only once `disconnected` completes, and an away watch would otherwise keep the
+        // slot (and re-arm every RETRY_BACKOFF) after its goal moved to another watch.
+        if (!linkUp.get() && !_disconnected.isCompleted) {
+            _disconnected.complete(
+                if (attempted) ConnectionFailureReason.NotAnError_DisconnectRequested
+                else ConnectionFailureReason.NotAnError_NeverAttmpedConnection,
+            )
         }
     }
 
@@ -508,7 +525,7 @@ class BluezGattConnector(
     // time — it's a backstop against a missed/raced PropertiesChanged signal (e.g. the
     // ServicesResolved fast-path above completing on a stale read without a matching Connected
     // edge ever arriving), not a liveness timeout.
-    private suspend fun reconcileConnectedState(props: Properties, linkUp: AtomicBoolean) {
+    private suspend fun reconcileConnectedState(props: Properties) {
         while (scope.isActive && linkUp.get() && !_disconnected.isCompleted) {
             delay(RECONCILE_INTERVAL)
             if (!linkUp.get() || _disconnected.isCompleted) return

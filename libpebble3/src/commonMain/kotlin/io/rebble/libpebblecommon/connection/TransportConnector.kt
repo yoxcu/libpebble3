@@ -65,6 +65,8 @@ enum class ConnectionFailureReason {
     CreateBondFailed,
     PairingTimedOut,
     NotAnError_NeverAttmpedConnection,
+    // Fork (stoandl): disconnect() ended an attempt whose link never came up (the goal moved away).
+    NotAnError_DisconnectRequested,
     TimeoutInitializingPpog,
     ClassicConnectionFailed,
     ClassicDisconnected,
